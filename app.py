@@ -47,20 +47,42 @@ def read_attendance():
 # ── Pages ─────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
-    return render_template("index.html")
+    records = read_attendance()
+    today   = datetime.now().strftime("%Y-%m-%d")
 
+    today_checkins = sum(1 for r in records if r.get("Date") == today)
+    total_checkins = len(records)
+
+    confidences = []
+    for r in records:
+        try:
+            confidences.append(float(r["Confidence (%)"]))
+        except (KeyError, ValueError):
+            pass
+    avg_confidence = round(sum(confidences) / len(confidences), 1) if confidences else 0
+
+    stats = {
+        "total_users":    User.query.count(),
+        "today_checkins": today_checkins,
+        "total_checkins": total_checkins,
+        "avg_confidence": avg_confidence,
+        "recent_records": records[:5],   # 5 most recent for dashboard preview
+    }
+    return render_template("index.html", active_page="dashboard", stats=stats)
+
+# AFTER
 @app.route("/register")
 def register_page():
-    return render_template("register.html")
+    return render_template("register.html", active_page="register")
 
 @app.route("/identify")
 def identify_page():
-    return render_template("identify.html")
+    return render_template("identify.html", active_page="identify")
 
 @app.route("/attendance")
 def attendance_page():
     records = read_attendance()
-    return render_template("attendance.html", records=records)
+    return render_template("attendance.html", records=records, active_page="attendance")
 
 # ── API: Download raw CSV ─────────────────────────────────────────────
 @app.route("/api/attendance/download")

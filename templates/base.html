@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{% block title %}TRACE{% endblock %} — Time & Recognition Automated Check-in Engine</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Smooth dropdown animation */
+    #dot-menu {
+      transform-origin: top right;
+      transition: opacity 0.15s ease, transform 0.15s ease;
+    }
+    #dot-menu.hidden {
+      opacity: 0;
+      transform: scale(0.95);
+      pointer-events: none;
+    }
+    #dot-menu.open {
+      opacity: 1;
+      transform: scale(1);
+      pointer-events: auto;
+    }
+    /* Active nav link indicator */
+    .nav-active {
+      color: #22d3ee; /* cyan-400 */
+      border-bottom: 2px solid #22d3ee;
+    }
+    /* Subtle page fade-in */
+    .page-content {
+      animation: fadeIn 0.2s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+
+<body class="bg-gray-950 text-white min-h-screen flex flex-col">
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       GLOBAL TOP NAVIGATION
+  ═══════════════════════════════════════════════════════════════ -->
+  <header class="sticky top-0 z-40 bg-gray-900/80 backdrop-blur border-b border-gray-800">
+    <nav class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-6">
+
+      <!-- Brand -->
+      <a href="/" class="flex items-center gap-3 shrink-0">
+        <span class="text-2xl font-extrabold tracking-widest text-cyan-400">TRACE</span>
+        <span class="hidden sm:block text-xs text-gray-500 font-medium leading-tight max-w-[140px]">
+          Time & Recognition<br/>Automated Check-in
+        </span>
+      </a>
+
+      <!-- Primary Nav Links (desktop) -->
+      <div class="hidden md:flex items-center gap-1 text-sm font-medium text-gray-400">
+        <a href="/"
+           class="px-4 py-2 rounded-lg hover:text-white hover:bg-gray-800 transition
+                  {% if active_page == 'dashboard' %}text-cyan-400 bg-gray-800{% endif %}">
+          Dashboard
+        </a>
+        <a href="/attendance"
+           class="px-4 py-2 rounded-lg hover:text-white hover:bg-gray-800 transition
+                  {% if active_page == 'attendance' %}text-cyan-400 bg-gray-800{% endif %}">
+          Attendance
+        </a>
+        <a href="/users"
+           class="px-4 py-2 rounded-lg hover:text-white hover:bg-gray-800 transition
+                  {% if active_page == 'users' %}text-cyan-400 bg-gray-800{% endif %}">
+          Manage Users
+        </a>
+      </div>
+
+      <!-- Right side: Quick actions + 3-dot menu -->
+      <div class="flex items-center gap-3">
+
+        <!-- Identify shortcut (always visible) -->
+        <a href="/identify"
+           class="hidden sm:flex items-center gap-2 bg-cyan-500 hover:bg-cyan-400
+                  text-black text-sm font-bold px-4 py-2 rounded-lg transition">
+          <span>⚡</span> Identify
+        </a>
+
+        <!-- ⋮ Three-dot menu button -->
+        <div class="relative">
+          <button id="dot-btn"
+            onclick="toggleMenu()"
+            class="w-10 h-10 flex items-center justify-center rounded-lg
+                   bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white
+                   transition text-xl font-bold border border-gray-700"
+            aria-label="More actions"
+            aria-expanded="false">
+            ⋮
+          </button>
+
+          <!-- Dropdown Menu -->
+          <div id="dot-menu"
+            class="hidden absolute right-0 mt-2 w-64 bg-gray-900 border border-gray-700
+                   rounded-2xl shadow-2xl shadow-black/60 overflow-hidden z-50">
+
+            <!-- Section: Face -->
+            <div class="px-4 pt-4 pb-1">
+              <p class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
+                Face Recognition
+              </p>
+              <a href="/register"
+                 class="flex items-center gap-3 px-3 py-2.5 rounded-xl
+                        text-sm text-gray-300 hover:text-white hover:bg-gray-800 transition">
+                <span class="text-lg">📸</span>
+                <span>Register Face</span>
+              </a>
+              <a href="/identify"
+                 class="flex items-center gap-3 px-3 py-2.5 rounded-xl
+                        text-sm text-gray-300 hover:text-white hover:bg-gray-800 transition">
+                <span class="text-lg">🔍</span>
+                <span>Identify via Face</span>
+              </a>
+            </div>
+
+            <div class="mx-4 my-2 border-t border-gray-800"></div>
+
+            <!-- Section: Gait -->
+            <div class="px-4 pb-1">
+              <p class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
+                Gait Recognition
+              </p>
+              <a href="/register-gait"
+                 class="flex items-center gap-3 px-3 py-2.5 rounded-xl
+                        text-sm text-gray-300 hover:text-white hover:bg-gray-800 transition">
+                <span class="text-lg">🚶</span>
+                <span>Register Gait</span>
+                <span class="ml-auto text-xs bg-violet-900 text-violet-300
+                             border border-violet-700 px-2 py-0.5 rounded-full">New</span>
+              </a>
+              <a href="/identify-gait"
+                 class="flex items-center gap-3 px-3 py-2.5 rounded-xl
+                        text-sm text-gray-300 hover:text-white hover:bg-gray-800 transition">
+                <span class="text-lg">🎯</span>
+                <span>Identify via Gait</span>
+                <span class="ml-auto text-xs bg-violet-900 text-violet-300
+                             border border-violet-700 px-2 py-0.5 rounded-full">New</span>
+              </a>
+            </div>
+
+            <div class="mx-4 my-2 border-t border-gray-800"></div>
+
+            <!-- Section: Data -->
+            <div class="px-4 pb-4">
+              <p class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
+                Data
+              </p>
+              <a href="/attendance"
+                 class="flex items-center gap-3 px-3 py-2.5 rounded-xl
+                        text-sm text-gray-300 hover:text-white hover:bg-gray-800 transition">
+                <span class="text-lg">📋</span>
+                <span>Attendance Log</span>
+              </a>
+              <a href="/users"
+                 class="flex items-center gap-3 px-3 py-2.5 rounded-xl
+                        text-sm text-gray-300 hover:text-white hover:bg-gray-800 transition">
+                <span class="text-lg">👥</span>
+                <span>Manage Users</span>
+              </a>
+              <a href="/api/attendance/download"
+                 class="flex items-center gap-3 px-3 py-2.5 rounded-xl
+                        text-sm text-gray-300 hover:text-white hover:bg-gray-800 transition">
+                <span class="text-lg">⬇️</span>
+                <span>Download CSV</span>
+              </a>
+            </div>
+          </div>
+        </div>
+        <!-- end 3-dot -->
+
+      </div>
+    </nav>
+  </header>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       PAGE CONTENT
+  ═══════════════════════════════════════════════════════════════ -->
+  <main class="flex-1 page-content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       FOOTER
+  ═══════════════════════════════════════════════════════════════ -->
+  <footer class="border-t border-gray-800 py-4 text-center text-xs text-gray-600">
+    TRACE &mdash; Multi-Modal Attendance System &nbsp;·&nbsp;
+    B.Tech Capstone Project &nbsp;·&nbsp;
+    <span class="text-gray-700">Phase 2: Face + Gait</span>
+  </footer>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       GLOBAL SCRIPTS
+  ═══════════════════════════════════════════════════════════════ -->
+  <script>
+    // ── 3-dot menu toggle ──────────────────────────────────────────
+    function toggleMenu() {
+      const menu = document.getElementById("dot-menu");
+      const btn  = document.getElementById("dot-btn");
+      const isOpen = menu.classList.contains("open");
+
+      if (isOpen) {
+        menu.classList.remove("open");
+        menu.classList.add("hidden");
+        btn.setAttribute("aria-expanded", "false");
+      } else {
+        menu.classList.remove("hidden");
+        // Tiny rAF so the browser registers the class removal before adding open
+        requestAnimationFrame(() => {
+          menu.classList.add("open");
+        });
+        btn.setAttribute("aria-expanded", "true");
+      }
+    }
+
+    // Close menu when clicking outside
+    document.addEventListener("click", function(e) {
+      const menu = document.getElementById("dot-menu");
+      const btn  = document.getElementById("dot-btn");
+      if (!menu.contains(e.target) && !btn.contains(e.target)) {
+        menu.classList.remove("open");
+        menu.classList.add("hidden");
+        btn.setAttribute("aria-expanded", "false");
+      }
+    });
+
+    // Close menu on Escape key
+    document.addEventListener("keydown", function(e) {
+      if (e.key === "Escape") {
+        const menu = document.getElementById("dot-menu");
+        const btn  = document.getElementById("dot-btn");
+        menu.classList.remove("open");
+        menu.classList.add("hidden");
+        btn.setAttribute("aria-expanded", "false");
+      }
+    });
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

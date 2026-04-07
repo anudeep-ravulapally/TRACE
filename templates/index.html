@@ -1,77 +1,262 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>TRACE – Time & Recognition Automated Check-in Engine</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-gray-950 text-white min-h-screen flex flex-col items-center justify-center px-6">
-  <div class="text-center mb-10">
-    <h1 class="text-6xl font-extrabold tracking-widest text-cyan-400">TRACE</h1>
-    <p class="text-gray-400 mt-2 text-lg tracking-wide">Time & Recognition Automated Check-in Engine</p>
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-6 py-12">
+
+  <!-- ── Hero ──────────────────────────────────────────────────────── -->
+  <div class="mb-12 text-center">
+    <h1 class="text-5xl font-extrabold tracking-widest text-cyan-400 mb-3">TRACE</h1>
+    <p class="text-gray-400 text-lg tracking-wide">
+      Time &amp; Recognition Automated Check-in Engine
+    </p>
+    <p class="text-gray-600 text-sm mt-1">Multi-Modal · Face + Gait Recognition</p>
   </div>
 
-  <div class="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-5xl w-full mb-12">
-    <div class="bg-gray-900 border border-cyan-800 rounded-2xl p-6 text-center">
-      <div class="text-4xl mb-3">🧠</div>
-      <h2 class="text-xl font-bold text-cyan-300 mb-2">AI-Powered</h2>
-      <p class="text-gray-400 text-sm">Uses DeepFace with the ArcFace model — one of the most accurate facial recognition systems available.</p>
+  <!-- ── Live Stats Row ─────────────────────────────────────────────── -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-12">
+
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-5 text-center
+                hover:border-cyan-800 transition">
+      <p class="text-3xl font-extrabold text-cyan-400">{{ stats.total_users }}</p>
+      <p class="text-xs text-gray-500 mt-1 uppercase tracking-wider">Registered Users</p>
     </div>
-    <div class="bg-gray-900 border border-cyan-800 rounded-2xl p-6 text-center">
-      <div class="text-4xl mb-3">⚡</div>
-      <h2 class="text-xl font-bold text-cyan-300 mb-2">Instant Recognition</h2>
-      <p class="text-gray-400 text-sm">Identifies registered users in real time using a live webcam feed — no cards, no PINs needed.</p>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-5 text-center
+                hover:border-emerald-800 transition">
+      <p class="text-3xl font-extrabold text-emerald-400">{{ stats.today_checkins }}</p>
+      <p class="text-xs text-gray-500 mt-1 uppercase tracking-wider">Check-ins Today</p>
     </div>
-    <div class="bg-gray-900 border border-cyan-800 rounded-2xl p-6 text-center">
-      <div class="text-4xl mb-3">🔒</div>
-      <h2 class="text-xl font-bold text-cyan-300 mb-2">Secure by Design</h2>
-      <p class="text-gray-400 text-sm">Stores only mathematical face embeddings — never your actual photos. Your biometric data stays private.</p>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-5 text-center
+                hover:border-violet-800 transition">
+      <p class="text-3xl font-extrabold text-violet-400">{{ stats.total_checkins }}</p>
+      <p class="text-xs text-gray-500 mt-1 uppercase tracking-wider">Total Check-ins</p>
     </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-5 text-center
+                hover:border-yellow-800 transition">
+      <p class="text-3xl font-extrabold text-yellow-400">
+        {{ stats.avg_confidence }}%
+      </p>
+      <p class="text-xs text-gray-500 mt-1 uppercase tracking-wider">Avg Confidence</p>
+    </div>
+
   </div>
 
-  <div class="bg-gray-900 border border-gray-700 rounded-2xl p-8 max-w-3xl w-full mb-12">
-    <h2 class="text-2xl font-bold text-white mb-6 text-center">How It Works</h2>
-    <div class="flex flex-col md:flex-row items-center justify-between gap-4 text-center">
-      <div class="flex-1">
-        <div class="text-3xl mb-2">📸</div>
-        <p class="text-cyan-400 font-semibold">Step 1</p>
-        <p class="text-gray-400 text-sm mt-1">Register your face using the webcam</p>
-      </div>
-      <div class="text-gray-600 text-3xl hidden md:block">→</div>
-      <div class="flex-1">
-        <div class="text-3xl mb-2">💾</div>
-        <p class="text-cyan-400 font-semibold">Step 2</p>
-        <p class="text-gray-400 text-sm mt-1">Your face embedding is stored securely</p>
-      </div>
-      <div class="text-gray-600 text-3xl hidden md:block">→</div>
-      <div class="flex-1">
-        <div class="text-3xl mb-2">✅</div>
-        <p class="text-cyan-400 font-semibold">Step 3</p>
-        <p class="text-gray-400 text-sm mt-1">Look at the camera to be identified instantly</p>
-      </div>
-    </div>
-  </div>
+  <!-- ── Quick Action Cards ─────────────────────────────────────────── -->
+  <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-widest mb-4">
+    Quick Actions
+  </h2>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-14">
 
-  <div class="flex gap-4 flex-wrap justify-center">
+    <!-- Register Face -->
     <a href="/register"
-       class="bg-cyan-500 hover:bg-cyan-400 text-black font-bold py-3 px-8 rounded-xl text-lg transition">
-      Register New User
+       class="group bg-gray-900 border border-gray-800 hover:border-cyan-600
+              rounded-2xl p-6 flex flex-col gap-3 transition">
+      <span class="text-4xl">📸</span>
+      <div>
+        <p class="font-bold text-white group-hover:text-cyan-400 transition">
+          Register Face
+        </p>
+        <p class="text-gray-500 text-xs mt-1">
+          Add a new user via webcam capture
+        </p>
+      </div>
+      <span class="mt-auto text-xs text-cyan-600 group-hover:text-cyan-400 font-semibold
+                   transition">
+        Face Module →
+      </span>
     </a>
+
+    <!-- Identify Face -->
     <a href="/identify"
-       class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-8 rounded-xl text-lg transition">
-      Identify Me
+       class="group bg-gray-900 border border-gray-800 hover:border-cyan-600
+              rounded-2xl p-6 flex flex-col gap-3 transition">
+      <span class="text-4xl">🔍</span>
+      <div>
+        <p class="font-bold text-white group-hover:text-cyan-400 transition">
+          Identify via Face
+        </p>
+        <p class="text-gray-500 text-xs mt-1">
+          Recognize &amp; log attendance instantly
+        </p>
+      </div>
+      <span class="mt-auto text-xs text-cyan-600 group-hover:text-cyan-400 font-semibold
+                   transition">
+        Face Module →
+      </span>
     </a>
-    <a href="/attendance"
-       class="bg-emerald-700 hover:bg-emerald-600 text-white font-bold py-3 px-8 rounded-xl text-lg transition">
-      📋 Attendance Log
+
+    <!-- Register Gait -->
+    <a href="/register-gait"
+       class="group bg-gray-900 border border-gray-800 hover:border-violet-600
+              rounded-2xl p-6 flex flex-col gap-3 transition relative">
+      <span class="text-4xl">🚶</span>
+      <div>
+        <p class="font-bold text-white group-hover:text-violet-400 transition">
+          Register Gait
+        </p>
+        <p class="text-gray-500 text-xs mt-1">
+          Capture walking pattern for a user
+        </p>
+      </div>
+      <span class="mt-auto text-xs text-violet-600 group-hover:text-violet-400 font-semibold
+                   transition">
+        Gait Module →
+      </span>
+      <span class="absolute top-4 right-4 text-xs bg-violet-900 text-violet-300
+                   border border-violet-700 px-2 py-0.5 rounded-full">New</span>
     </a>
-    <a href="/users"
-       class="bg-violet-700 hover:bg-violet-600 text-white font-bold py-3 px-8 rounded-xl text-lg transition">
-      👥 Manage Users
+
+    <!-- Identify Gait -->
+    <a href="/identify-gait"
+       class="group bg-gray-900 border border-gray-800 hover:border-violet-600
+              rounded-2xl p-6 flex flex-col gap-3 transition relative">
+      <span class="text-4xl">🎯</span>
+      <div>
+        <p class="font-bold text-white group-hover:text-violet-400 transition">
+          Identify via Gait
+        </p>
+        <p class="text-gray-500 text-xs mt-1">
+          Recognize user from walking footage
+        </p>
+      </div>
+      <span class="mt-auto text-xs text-violet-600 group-hover:text-violet-400 font-semibold
+                   transition">
+        Gait Module →
+      </span>
+      <span class="absolute top-4 right-4 text-xs bg-violet-900 text-violet-300
+                   border border-violet-700 px-2 py-0.5 rounded-full">New</span>
     </a>
+
   </div>
 
-  <p class="text-gray-600 text-xs mt-10">Phase 1 — Facial Recognition Module</p>
-</body>
-</html>
+  <!-- ── How It Works + Features Row ───────────────────────────────── -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-12">
+
+    <!-- How It Works -->
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-8">
+      <h2 class="text-lg font-bold text-white mb-6">How It Works</h2>
+      <div class="flex flex-col gap-5">
+        <div class="flex items-start gap-4">
+          <div class="w-9 h-9 rounded-full bg-cyan-900 border border-cyan-700
+                      flex items-center justify-center text-sm font-bold text-cyan-400 shrink-0">
+            1
+          </div>
+          <div>
+            <p class="font-semibold text-white text-sm">Register Your Biometrics</p>
+            <p class="text-gray-500 text-xs mt-0.5">
+              Capture your face via webcam or record a short walking clip for gait.
+            </p>
+          </div>
+        </div>
+        <div class="flex items-start gap-4">
+          <div class="w-9 h-9 rounded-full bg-cyan-900 border border-cyan-700
+                      flex items-center justify-center text-sm font-bold text-cyan-400 shrink-0">
+            2
+          </div>
+          <div>
+            <p class="font-semibold text-white text-sm">Embeddings Stored Securely</p>
+            <p class="text-gray-500 text-xs mt-0.5">
+              Only mathematical vectors are saved — never your raw photos or video.
+            </p>
+          </div>
+        </div>
+        <div class="flex items-start gap-4">
+          <div class="w-9 h-9 rounded-full bg-cyan-900 border border-cyan-700
+                      flex items-center justify-center text-sm font-bold text-cyan-400 shrink-0">
+            3
+          </div>
+          <div>
+            <p class="font-semibold text-white text-sm">Instant Recognition &amp; Logging</p>
+            <p class="text-gray-500 text-xs mt-0.5">
+              Look at the camera or walk past the sensor — attendance is logged automatically.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- System Feature Highlights -->
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-8">
+      <h2 class="text-lg font-bold text-white mb-6">System Highlights</h2>
+      <div class="flex flex-col gap-4">
+        <div class="flex items-center gap-4 bg-gray-800/50 rounded-xl px-4 py-3">
+          <span class="text-2xl">🧠</span>
+          <div>
+            <p class="text-sm font-semibold text-white">ArcFace Deep Learning Model</p>
+            <p class="text-xs text-gray-500">State-of-the-art face embedding via DeepFace</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-4 bg-gray-800/50 rounded-xl px-4 py-3">
+          <span class="text-2xl">🚶</span>
+          <div>
+            <p class="text-sm font-semibold text-white">Gait Recognition Module</p>
+            <p class="text-xs text-gray-500">
+              Video-based silhouette analysis — works even with face occlusion
+            </p>
+          </div>
+        </div>
+        <div class="flex items-center gap-4 bg-gray-800/50 rounded-xl px-4 py-3">
+          <span class="text-2xl">🔒</span>
+          <div>
+            <p class="text-sm font-semibold text-white">Privacy-First Architecture</p>
+            <p class="text-xs text-gray-500">
+              Biometric data stays local — no cloud, no raw media stored
+            </p>
+          </div>
+        </div>
+        <div class="flex items-center gap-4 bg-gray-800/50 rounded-xl px-4 py-3">
+          <span class="text-2xl">⚡</span>
+          <div>
+            <p class="text-sm font-semibold text-white">Real-Time CSV Export</p>
+            <p class="text-xs text-gray-500">
+              Download your attendance log anytime in one click
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Recent Check-ins Preview ───────────────────────────────────── -->
+  {% if stats.recent_records %}
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+    <div class="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+      <h2 class="text-sm font-bold text-white uppercase tracking-widest">
+        Recent Check-ins
+      </h2>
+      <a href="/attendance"
+         class="text-xs text-cyan-500 hover:text-cyan-400 font-semibold transition">
+        View All →
+      </a>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-800/60 text-gray-500 text-xs uppercase tracking-wider">
+          <tr>
+            <th class="px-6 py-3 text-left">Name</th>
+            <th class="px-6 py-3 text-left">Date</th>
+            <th class="px-6 py-3 text-left">Time</th>
+            <th class="px-6 py-3 text-left">Confidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for record in stats.recent_records %}
+          <tr class="border-t border-gray-800 hover:bg-gray-800/40 transition">
+            <td class="px-6 py-3 font-semibold text-white">{{ record['Name'] }}</td>
+            <td class="px-6 py-3 text-gray-400">{{ record['Date'] }}</td>
+            <td class="px-6 py-3 text-gray-400">{{ record['Time'] }}</td>
+            <td class="px-6 py-3 text-gray-300">{{ record['Confidence (%)'] }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
