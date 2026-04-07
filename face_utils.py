@@ -4,7 +4,7 @@ from deepface import DeepFace
 import base64, cv2
 
 MODEL_NAME = "ArcFace"
-THRESHOLD  = 0.68   # Cosine similarity threshold (tune this later)
+THRESHOLD  = 0.75   # Cosine similarity threshold (tune this later)
 
 def base64_to_image(b64_string):
     """Convert a base64 webcam capture to an OpenCV image."""
@@ -19,7 +19,8 @@ def get_embedding(image):
     result = DeepFace.represent(
         img_path=image,
         model_name=MODEL_NAME,
-        enforce_detection=True   # Raises error if no face found
+        enforce_detection=True,   # Raises error if no face found
+        detector_backend="mtcnn"
     )
     return result[0]["embedding"]  # Returns list of 512 floats
 
