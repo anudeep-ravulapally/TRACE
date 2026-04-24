@@ -220,3 +220,6 @@ database/trace.db
 
 # Project Specific Data & Logs
 attendance.csv
+
+# AI Code Bridge
+.agent/

@@ -4,7 +4,7 @@ from deepface import DeepFace
 import base64, cv2
 
 MODEL_NAME = "ArcFace"
-THRESHOLD  = 0.75   # Cosine similarity threshold (tune this later)
+THRESHOLD  = 0.68   # Optimal cosine similarity threshold for ArcFace + RetinaFace
 
 def base64_to_image(b64_string):
     """Convert a base64 webcam capture to an OpenCV image."""
@@ -15,14 +15,42 @@ def base64_to_image(b64_string):
     return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
 def get_embedding(image):
-    """Extract a 512-number ArcFace embedding from an image."""
+    """Extract a 512-number ArcFace embedding from an image using RetinaFace detector."""
     result = DeepFace.represent(
         img_path=image,
         model_name=MODEL_NAME,
-        enforce_detection=True,   # Raises error if no face found
-        detector_backend="mtcnn"
+        enforce_detection=True,
+        detector_backend="retinaface"   # More robust than mtcnn for contorted faces
     )
     return result[0]["embedding"]  # Returns list of 512 floats
+
+def get_averaged_embedding(images_b64):
+    """
+    Given a list of base64 image strings, extract ArcFace embeddings for each
+    valid face and return the mean (averaged) embedding vector.
+
+    Frames where no face is detected are silently skipped.
+    Raises ValueError if no valid face was found in any frame.
+    """
+    embeddings = []
+    for b64 in images_b64:
+        try:
+            image = base64_to_image(b64)
+            emb   = get_embedding(image)
+            embeddings.append(emb)
+        except Exception:
+            # Skip frames where detection failed (no face, blur, etc.)
+            continue
+
+    if not embeddings:
+        raise ValueError(
+            "No face could be detected in any of the captured frames. "
+            "Please ensure your face is clearly visible and try again."
+        )
+
+    # Stack into (N, 512) matrix and compute column-wise mean → (512,) vector
+    mean_embedding = np.mean(np.array(embeddings), axis=0).tolist()
+    return mean_embedding
 
 def cosine_similarity(vec1, vec2):
     """Compute cosine similarity between two embedding vectors."""

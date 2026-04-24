@@ -1,20 +1,85 @@
 {% extends "base.html" %}
 {% block title %}Register Face{% endblock %}
 
+{% block head %}
+<style>
+  /* ── Countdown ring ──────────────────────────────────────────── */
+  .countdown-ring { transform: rotate(-90deg); }
+  .countdown-ring-track {
+    fill: none;
+    stroke: #1f2937;
+    stroke-width: 5;
+  }
+  .countdown-ring-fill {
+    fill: none;
+    stroke: #22d3ee;
+    stroke-width: 5;
+    stroke-linecap: round;
+    stroke-dasharray: 226; /* 2π × 36 */
+    stroke-dashoffset: 0;
+    transition: stroke-dashoffset 1s linear, stroke 0.3s ease;
+    filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.6));
+  }
+
+  /* ── Shutter flash ───────────────────────────────────────────── */
+  @keyframes shutter {
+    0%   { opacity: 0; }
+    15%  { opacity: 0.85; }
+    100% { opacity: 0; }
+  }
+  .shutter-flash { animation: shutter 0.45s ease-out forwards; }
+
+  /* ── Step pill states ────────────────────────────────────────── */
+  .step-pill { transition: all 0.35s ease; }
+  .step-pill.active {
+    background: rgba(34, 211, 238, 0.12);
+    border-color: #22d3ee;
+    color: #22d3ee;
+  }
+  .step-pill.done {
+    background: rgba(16, 185, 129, 0.12);
+    border-color: #10b981;
+    color: #10b981;
+  }
+
+  /* ── Instruction text slide-in ──────────────────────────────── */
+  @keyframes instructIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0);   }
+  }
+  .instruct-in { animation: instructIn 0.3s ease forwards; }
+
+  /* ── Checkmark draw-on ──────────────────────────────────────── */
+  @keyframes checkDraw {
+    from { stroke-dashoffset: 60; }
+    to   { stroke-dashoffset: 0;  }
+  }
+  .check-draw {
+    stroke-dasharray: 60;
+    stroke-dashoffset: 60;
+    animation: checkDraw 0.5s ease 0.1s forwards;
+  }
+
+  /* ── Spinner ────────────────────────────────────────────────── */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin { animation: spin 0.9s linear infinite; }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="max-w-xl mx-auto px-6 py-12">
+<div class="max-w-2xl mx-auto px-6 py-12">
 
   <!-- Page Header -->
   <div class="mb-8">
     <h1 class="text-4xl font-extrabold text-cyan-400">Register Face</h1>
     <p class="text-gray-500 text-sm mt-1">
-      Add a new user to the TRACE face recognition database
+      TRACE will coach you through 5 expressions for robust, expression-proof recognition
     </p>
   </div>
 
   <div class="bg-gray-900 border border-gray-800 rounded-2xl p-8">
 
-    <!-- Full Name Input -->
+    <!-- Full Name -->
     <label class="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
       Full Name
     </label>
@@ -24,19 +89,19 @@
              focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30
              transition"/>
 
-    <!-- Webcam Label -->
+    <!-- Webcam label -->
     <label class="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
       Webcam Preview
     </label>
 
-    <!-- Webcam Container -->
-    <div class="relative rounded-xl overflow-hidden bg-black mb-5
-                aspect-video flex items-center justify-center
-                border border-gray-800">
-      <video id="webcam" autoplay playsinline
-        class="w-full h-full object-cover"></video>
+    <!-- ── Video container ───────────────────────────────────────── -->
+    <div id="videoWrap"
+      class="relative rounded-xl overflow-hidden bg-black mb-5 border border-gray-800"
+      style="aspect-ratio:16/9;">
 
-      <!-- Placeholder overlay — hidden once camera starts -->
+      <video id="webcam" autoplay playsinline class="w-full h-full object-cover"></video>
+
+      <!-- Camera-not-started placeholder -->
       <div id="webcamPlaceholder"
         class="absolute inset-0 flex flex-col items-center justify-center
                text-gray-700 bg-gray-950/80">
@@ -45,41 +110,112 @@
         <span class="text-xs mt-1 text-gray-600">Click "Start Camera" below</span>
       </div>
 
-      <!-- Recording indicator (shown after camera starts) -->
+      <!-- LIVE pill -->
       <div id="liveIndicator"
-        class="hidden absolute top-3 left-3 flex items-center gap-2
+        class="hidden absolute top-3 left-3 items-center gap-2
                bg-black/60 backdrop-blur rounded-full px-3 py-1">
         <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
         <span class="text-xs text-gray-300 font-medium">LIVE</span>
       </div>
-    </div>
 
-    <!-- Hidden canvas for frame capture -->
+      <!-- ── Coaching overlay (shown during sequence) ─────────── -->
+      <div id="sequenceOverlay"
+        class="hidden absolute inset-0 flex-col items-center justify-center
+               bg-black/60 backdrop-blur-sm gap-3 px-4">
+
+        <!-- Prompt header -->
+        <p class="text-xs font-bold text-gray-400 uppercase tracking-[0.2em]">Make a:</p>
+
+        <!-- Expression label -->
+        <p id="expressionLabel"
+          class="text-3xl sm:text-4xl font-extrabold text-white text-center instruct-in
+                 drop-shadow-[0_2px_16px_rgba(0,0,0,0.9)]">
+        </p>
+
+        <!-- Countdown ring + number -->
+        <div class="relative w-24 h-24 flex items-center justify-center mt-1">
+          <svg class="countdown-ring absolute inset-0 w-full h-full" viewBox="0 0 80 80">
+            <circle class="countdown-ring-track" cx="40" cy="40" r="36"/>
+            <circle id="ringFill"  class="countdown-ring-fill"  cx="40" cy="40" r="36"/>
+          </svg>
+          <span id="countdownNum"
+            class="relative text-5xl font-extrabold text-cyan-400 tabular-nums select-none
+                   drop-shadow-[0_0_16px_rgba(34,211,238,0.7)]">
+            3
+          </span>
+        </div>
+
+        <!-- Capture progress dots -->
+        <div id="progressDots" class="flex gap-2 mt-1">
+          <!-- built by JS -->
+        </div>
+
+      </div>
+      <!-- /sequenceOverlay -->
+
+      <!-- ── Shutter flash layer ───────────────────────────────── -->
+      <div id="shutterFlash"
+        class="absolute inset-0 bg-white pointer-events-none opacity-0">
+      </div>
+
+      <!-- ── All-done overlay ──────────────────────────────────── -->
+      <div id="doneOverlay"
+        class="hidden absolute inset-0 flex-col items-center justify-center
+               bg-black/75 backdrop-blur-sm gap-4">
+        <!-- Animated check -->
+        <svg class="w-16 h-16" viewBox="0 0 64 64" fill="none">
+          <circle cx="32" cy="32" r="30"
+            stroke="#10b981" stroke-width="3" opacity="0.25"/>
+          <path class="check-draw" d="M18 33 l10 10 l18-20"
+            stroke="#10b981" stroke-width="3.5"
+            stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <p id="doneLabel"
+          class="text-xl font-extrabold text-emerald-400 text-center px-6">
+        </p>
+        <div class="flex items-center gap-2 text-gray-400 text-sm">
+          <svg class="spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2.5"
+              stroke-dasharray="40" stroke-dashoffset="15"/>
+          </svg>
+          Processing…
+        </div>
+      </div>
+      <!-- /doneOverlay -->
+
+    </div><!-- /videoWrap -->
+
+    <!-- Hidden canvas -->
     <canvas id="canvas" class="hidden"></canvas>
 
-    <!-- Action Buttons -->
+    <!-- ── Expression step pills ──────────────────────────────── -->
+    <div id="stepPills" class="grid grid-cols-5 gap-2 mb-6">
+      <!-- built by JS -->
+    </div>
+
+    <!-- ── Buttons ───────────────────────────────────────────── -->
     <div class="flex flex-col gap-3">
-      <button onclick="startCamera()"
+      <button id="btnCamera" onclick="startCamera()"
         class="w-full bg-gray-800 hover:bg-gray-700 border border-gray-700
                text-white font-semibold py-3 rounded-xl transition text-sm">
         📷 &nbsp;Start Camera
       </button>
-      <button onclick="registerUser()"
+      <button id="btnStart" onclick="startSequence()"
         class="w-full bg-cyan-500 hover:bg-cyan-400 active:bg-cyan-600
                text-black font-bold py-3 rounded-xl transition text-sm">
-        ✅ &nbsp;Capture &amp; Register
+        🚀 &nbsp;Start Registration Sequence
       </button>
     </div>
 
-    <!-- Status Message -->
-    <div id="status" class="hidden mt-5 rounded-xl border py-3 px-4
-                             text-sm text-center font-medium"></div>
+    <!-- Status bar -->
+    <div id="status"
+      class="hidden mt-5 rounded-xl border py-3 px-4 text-sm text-center font-medium">
+    </div>
 
   </div>
 
-  <!-- Helper tip -->
   <p class="text-center text-xs text-gray-700 mt-5">
-    Position your face clearly in the frame before capturing. &nbsp;·&nbsp;
+    5 expressions · 3 seconds each · fully hands-free &nbsp;·&nbsp;
     Good lighting improves accuracy.
   </p>
 
@@ -88,71 +224,251 @@
 
 {% block scripts %}
 <script>
-  // ── Start webcam ───────────────────────────────────────────────────
-  async function startCamera() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      const video  = document.getElementById("webcam");
-      video.srcObject = stream;
-      document.getElementById("webcamPlaceholder").style.display  = "none";
-      document.getElementById("liveIndicator").classList.remove("hidden");
-      document.getElementById("liveIndicator").classList.add("flex");
-    } catch (err) {
-      showStatus("❌ Could not access camera: " + err.message, "red");
+// ── Config ────────────────────────────────────────────────────────────
+const EXPRESSIONS = [
+  { emoji: "😐", label: "Neutral Face"          },
+  { emoji: "😄", label: "Big Smile"             },
+  { emoji: "😠", label: "Angry / Frowning"      },
+  { emoji: "😑", label: "Squinting / Eyes Shut" },
+  { emoji: "🤪", label: "Goofy / Weird Face"    },
+];
+const COUNT_FROM = 3;       // seconds per expression
+const RING_CIRC  = 226;     // 2π × 36  (matches SVG r="36")
+
+// ── State ─────────────────────────────────────────────────────────────
+let sequenceRunning = false;
+let capturedImages  = [];
+
+// ── Build step pills on page load ─────────────────────────────────────
+buildPills();
+function buildPills() {
+  document.getElementById("stepPills").innerHTML = EXPRESSIONS.map((e, i) => `
+    <div id="pill-${i}"
+      class="step-pill flex flex-col items-center gap-1 border border-gray-700
+             rounded-xl py-2 px-1 text-gray-600 text-center cursor-default">
+      <span class="text-xl leading-none">${e.emoji}</span>
+      <span class="text-[10px] font-semibold leading-tight">${e.label}</span>
+    </div>
+  `).join("");
+}
+
+// ── Start camera ──────────────────────────────────────────────────────
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    document.getElementById("webcam").srcObject = stream;
+    document.getElementById("webcamPlaceholder").style.display = "none";
+    const li = document.getElementById("liveIndicator");
+    li.classList.remove("hidden");
+    li.classList.add("flex");
+  } catch (err) {
+    showStatus("❌ Could not access camera: " + err.message, "red");
+  }
+}
+
+// ── Capture one JPEG frame ─────────────────────────────────────────────
+function captureFrame() {
+  const video  = document.getElementById("webcam");
+  const canvas = document.getElementById("canvas");
+  canvas.width  = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+  return canvas.toDataURL("image/jpeg");
+}
+
+// ── Camera-shutter flash ───────────────────────────────────────────────
+function triggerShutter() {
+  const el = document.getElementById("shutterFlash");
+  el.classList.remove("shutter-flash");
+  void el.offsetWidth;            // force reflow to restart CSS animation
+  el.classList.add("shutter-flash");
+}
+
+// ── Update capture-progress dots inside the overlay ───────────────────
+function updateDots(filledCount) {
+  document.getElementById("progressDots").innerHTML =
+    EXPRESSIONS.map((_, i) => `
+      <span class="w-2.5 h-2.5 rounded-full border transition-all duration-300
+        ${i < filledCount
+          ? 'bg-cyan-400 border-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.6)]'
+          : 'bg-transparent border-gray-500'}">
+      </span>
+    `).join("");
+}
+
+// ── Animate the SVG ring for exactly one second, then resolve ─────────
+// secondsLeft = value currently displayed (counts 3→2→1)
+function animateRingSecond(secondsLeft) {
+  return new Promise(resolve => {
+    const ring  = document.getElementById("ringFill");
+    const numEl = document.getElementById("countdownNum");
+
+    // Fraction of arc remaining after this second
+    const remaining = (secondsLeft - 1) / COUNT_FROM;
+    ring.style.strokeDashoffset = RING_CIRC * (1 - remaining);
+
+    // Warm colour on the final second
+    if (secondsLeft === 1) {
+      ring.style.stroke = "#f59e0b";
+      ring.style.filter = "drop-shadow(0 0 6px rgba(245,158,11,0.6))";
     }
+
+    // Flip the number half-way through so it feels snappy
+    setTimeout(() => {
+      numEl.textContent = secondsLeft - 1 > 0 ? secondsLeft - 1 : "📸";
+    }, 600);
+
+    setTimeout(resolve, 1000);
+  });
+}
+
+// ── Reset ring back to full cyan ───────────────────────────────────────
+function resetRing() {
+  const ring = document.getElementById("ringFill");
+  // Kill transition momentarily so the jump is instant
+  ring.style.transition      = "none";
+  ring.style.strokeDashoffset = 0;
+  ring.style.stroke           = "#22d3ee";
+  ring.style.filter           = "drop-shadow(0 0 6px rgba(34,211,238,0.6))";
+  document.getElementById("countdownNum").textContent = COUNT_FROM;
+  requestAnimationFrame(() => {
+    ring.style.transition = "stroke-dashoffset 1s linear, stroke 0.3s ease";
+  });
+}
+
+// ── Main sequence ──────────────────────────────────────────────────────
+async function startSequence() {
+  const name  = document.getElementById("fullName").value.trim();
+  const video = document.getElementById("webcam");
+
+  if (!name) {
+    showStatus("⚠️ Please enter your full name first.", "yellow"); return;
+  }
+  if (!video.srcObject) {
+    showStatus("⚠️ Please start the camera first.", "yellow"); return;
+  }
+  if (sequenceRunning) return;
+
+  // Lock controls
+  sequenceRunning = true;
+  capturedImages  = [];
+  setButtons(false);
+  hideStatus();
+
+  // Show coaching overlay
+  const overlay = document.getElementById("sequenceOverlay");
+  overlay.classList.remove("hidden");
+  overlay.classList.add("flex");
+
+  // ── Iterate through each expression ──────────────────────────
+  for (let i = 0; i < EXPRESSIONS.length; i++) {
+    const { emoji, label } = EXPRESSIONS[i];
+
+    // Animate expression label in
+    const labelEl = document.getElementById("expressionLabel");
+    labelEl.classList.remove("instruct-in");
+    void labelEl.offsetWidth;
+    labelEl.textContent = `${emoji}  ${label}`;
+    labelEl.classList.add("instruct-in");
+
+    // Mark pill active, reset ring and dots
+    document.getElementById(`pill-${i}`).classList.add("active");
+    resetRing();
+    updateDots(i);
+
+    // 3-second countdown
+    for (let s = COUNT_FROM; s >= 1; s--) {
+      await animateRingSecond(s);
+    }
+
+    // Capture frame + shutter flash
+    capturedImages.push(captureFrame());
+    triggerShutter();
+
+    // Mark pill done
+    const pill = document.getElementById(`pill-${i}`);
+    pill.classList.remove("active");
+    pill.classList.add("done");
+    pill.innerHTML = `
+      <span class="text-xl leading-none">✅</span>
+      <span class="text-[10px] font-semibold leading-tight">${label}</span>
+    `;
+    updateDots(i + 1);
+
+    // Brief pause between expressions (skip after last)
+    if (i < EXPRESSIONS.length - 1) await sleep(380);
   }
 
-  // ── Capture frame and register user ───────────────────────────────
-  async function registerUser() {
-    const name   = document.getElementById("fullName").value.trim();
-    const video  = document.getElementById("webcam");
-    const canvas = document.getElementById("canvas");
+  // ── All 5 captured ─────────────────────────────────────────────
+  overlay.classList.add("hidden");
+  overlay.classList.remove("flex");
 
-    if (!name) {
-      showStatus("⚠️ Please enter your full name first.", "yellow"); return;
+  const doneOverlay = document.getElementById("doneOverlay");
+  document.getElementById("doneLabel").textContent = `${name}'s face captured!`;
+  doneOverlay.classList.remove("hidden");
+  doneOverlay.classList.add("flex");
+
+  // Send to backend
+  await submitRegistration(name, capturedImages);
+
+  await sleep(1400);
+  doneOverlay.classList.add("hidden");
+  doneOverlay.classList.remove("flex");
+
+  // Unlock + reset pills for possible re-registration
+  sequenceRunning = false;
+  setButtons(true);
+  buildPills();
+}
+
+// ── POST to /api/register ──────────────────────────────────────────────
+async function submitRegistration(name, images) {
+  try {
+    const res  = await fetch("/api/register", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ full_name: name, images })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      showStatus("✅ " + data.message, "green");
+      document.getElementById("fullName").value = "";
+    } else {
+      showStatus("❌ " + (data.error || "Registration failed."), "red");
     }
-    if (!video.srcObject) {
-      showStatus("⚠️ Please start the camera first.", "yellow"); return;
-    }
-
-    // Capture frame
-    canvas.width  = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0);
-    const imageData = canvas.toDataURL("image/jpeg");
-
-    showStatus("⏳ Processing… this may take a moment on first run.", "blue");
-
-    try {
-      const res  = await fetch("/api/register", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ full_name: name, image: imageData })
-      });
-      const data = await res.json();
-      if (data.success) {
-        showStatus("✅ " + data.message, "green");
-        document.getElementById("fullName").value = "";
-      } else {
-        showStatus("❌ " + (data.error || "Registration failed."), "red");
-      }
-    } catch (err) {
-      showStatus("❌ Network error: " + err.message, "red");
-    }
+  } catch (err) {
+    showStatus("❌ Network error: " + err.message, "red");
   }
+}
 
-  // ── Status helper ──────────────────────────────────────────────────
-  function showStatus(msg, color) {
-    const el = document.getElementById("status");
-    const map = {
-      green:  "text-green-400  bg-green-900/30  border-green-800",
-      red:    "text-red-400    bg-red-900/30    border-red-800",
-      yellow: "text-yellow-400 bg-yellow-900/30 border-yellow-800",
-      blue:   "text-blue-400   bg-blue-900/30   border-blue-800",
-    };
-    el.className = `mt-5 rounded-xl border py-3 px-4 text-sm text-center font-medium ${map[color]}`;
-    el.textContent = msg;
-    el.classList.remove("hidden");
-  }
+// ── Helpers ───────────────────────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function setButtons(enabled) {
+  const btnS = document.getElementById("btnStart");
+  const btnC = document.getElementById("btnCamera");
+  btnS.disabled = !enabled;
+  btnC.disabled = !enabled;
+  btnS.classList.toggle("opacity-40",       !enabled);
+  btnS.classList.toggle("cursor-not-allowed", !enabled);
+}
+
+function hideStatus() {
+  document.getElementById("status").classList.add("hidden");
+}
+
+function showStatus(msg, color) {
+  const el  = document.getElementById("status");
+  const map = {
+    green:  "text-green-400  bg-green-900/30  border-green-800",
+    red:    "text-red-400    bg-red-900/30    border-red-800",
+    yellow: "text-yellow-400 bg-yellow-900/30 border-yellow-800",
+    blue:   "text-blue-400   bg-blue-900/30   border-blue-800",
+  };
+  el.className = `mt-5 rounded-xl border py-3 px-4 text-sm text-center font-medium ${map[color]}`;
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
 </script>
 {% endblock %}

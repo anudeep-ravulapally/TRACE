@@ -3,7 +3,7 @@ import csv
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_file
 from models import db, User
-from face_utils import base64_to_image, get_embedding, find_best_match
+from face_utils import base64_to_image, get_embedding, get_averaged_embedding, find_best_match
 
 app = Flask(__name__)
 
@@ -70,7 +70,6 @@ def index():
     }
     return render_template("index.html", active_page="dashboard", stats=stats)
 
-# AFTER
 @app.route("/register")
 def register_page():
     return render_template("register.html", active_page="register")
@@ -91,24 +90,32 @@ def download_csv():
         return jsonify({"error": "No attendance records yet."}), 404
     return send_file(CSV_PATH, as_attachment=True, download_name="attendance.csv")
 
-# ── API: Register ─────────────────────────────────────────────────────
+# ── API: Register (multi-frame averaged embedding) ────────────────────
 @app.route("/api/register", methods=["POST"])
 def register():
     data      = request.get_json()
     full_name = data.get("full_name", "").strip()
-    image_b64 = data.get("image")
+    images    = data.get("images")   # list of base64 strings
 
-    if not full_name or not image_b64:
-        return jsonify({"error": "Name and image are required"}), 400
+    if not full_name:
+        return jsonify({"error": "Full name is required"}), 400
+    if not images or not isinstance(images, list) or len(images) == 0:
+        return jsonify({"error": "At least one image is required"}), 400
 
     try:
-        image     = base64_to_image(image_b64)
-        embedding = get_embedding(image)
+        # Compute the mean embedding across all captured frames
+        embedding = get_averaged_embedding(images)
         user      = User(full_name=full_name)
         user.set_embedding(embedding)
         db.session.add(user)
         db.session.commit()
-        return jsonify({"success": True, "message": f"{full_name} registered successfully!"})
+        return jsonify({
+            "success": True,
+            "message": f"{full_name} registered successfully! "
+                       f"(averaged from {len(images)} frames)"
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -156,7 +163,7 @@ def delete_user(user_id):
     user = User.query.get(user_id)
     if not user:
         return jsonify({"error": "User not found"}), 404
-    
+
     db.session.delete(user)
     db.session.commit()
     return jsonify({"success": True, "message": f"{user.full_name} deleted."})
