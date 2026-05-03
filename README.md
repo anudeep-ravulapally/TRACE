@@ -1,171 +1,149 @@
-# 🔍 TRACE — Time & Recognition Automated Check-in Engine
+# TRACE — Time & Recognition Automated Check-in Engine
 
-A multi-modal, privacy-first attendance system that uses **face recognition** (and gait, coming soon) to automatically log check-ins. Built with Flask + DeepFace (ArcFace model).
-
----
-
-## ✨ What It Does
-
-- 📸 **Register** a user's face via webcam (5-expression sequence for accuracy)
-- ⚡ **Identify** a user in real-time and log their attendance automatically
-- 📋 **View** the full attendance log with confidence scores
-- 👥 **Manage** registered users (search + delete)
-- ⬇️ **Export** attendance as a CSV file anytime
+> **Multimodal Biometric Attendance System** — Face Recognition + Gait Recognition + Adaptive Score-Level Fusion
 
 ---
 
-## 🖥️ Prerequisites
+## Overview
 
-Make sure you have these installed before starting:
+TRACE is a capstone research project that demonstrates automated, contactless attendance using two biometric modalities fused together:
 
-| Tool | Version | Download |
-|------|---------|----------|
-| Python | 3.9 – 3.11 | [python.org](https://www.python.org/downloads/) |
-| pip | (comes with Python) | — |
-| Git | any | [git-scm.com](https://git-scm.com/) |
-| A webcam | — | (built-in or USB) |
+| Module | Technology | Output |
+|--------|-----------|--------|
+| Face Recognition | DeepFace + ArcFace (512-D embedding) | `score_face` |
+| Gait Recognition | YOLOv8 → GEI → ResNet-18 (512-D embedding) | `score_gait` |
+| Fusion Engine | Adaptive score-level fusion | `score_final` |
 
-> ⚠️ **Python 3.12+ is not supported** — TensorFlow (used by DeepFace) requires Python 3.9–3.11.
-
----
-
-## 🚀 Setup & Installation
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/your-username/trace.git
-cd trace
+The fusion adapts weights based on face visibility:
 ```
-
-> If you received the project as a ZIP, just extract it and open a terminal inside the folder.
-
----
-
-### 2. Create a virtual environment
-
-**Windows:**
-```bash
-python -m venv trace_venv
-trace_venv\Scripts\activate
-```
-
-**macOS / Linux:**
-```bash
-python3 -m venv trace_venv
-source trace_venv/bin/activate
-```
-
-You should see `(trace_venv)` appear at the start of your terminal prompt. ✅
-
----
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-> ⏳ This will take a few minutes — it installs TensorFlow, DeepFace, OpenCV, and Flask.  
-> Make sure you have a stable internet connection.
-
----
-
-### 4. Run the app
-
-```bash
-python app.py
-```
-
-You should see output like:
-```
- * Running on http://127.0.0.1:5000
- * Debug mode: on
+If face is clear:    score_final = 0.7 × score_face + 0.3 × score_gait
+If face is occluded: score_final = 0.3 × score_face + 0.7 × score_gait
 ```
 
 ---
 
-### 5. Open in your browser
-
-Visit 👉 **[http://127.0.0.1:5000](http://127.0.0.1:5000)**
-
-> The first launch may be slow (30–60 seconds) as DeepFace downloads the ArcFace model weights automatically.
-
----
-
-## 🗺️ Pages & How to Use Them
-
-| Page | URL | What to do |
-|------|-----|-----------|
-| **Dashboard** | `/` | Overview of stats and recent check-ins |
-| **Register Face** | `/register` | Enter your name → click Start Camera → follow the 5-expression guide |
-| **Identify** | `/identify` | Click Start Camera → click Identify Me |
-| **Attendance Log** | `/attendance` | View all check-ins, search by name/date |
-| **Manage Users** | `/users` | Search or delete registered users |
-
-### Quick tip for registration:
-The system captures 5 expressions (Neutral, Smile, Angry, Squinting, Goofy) — just follow the on-screen prompts and hold each expression for 3 seconds. Better lighting = better accuracy.
-
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```
-trace/
-├── app.py              # Flask routes & API endpoints
-├── face_utils.py       # ArcFace embedding logic (DeepFace)
-├── models.py           # SQLAlchemy User model
-├── requirements.txt    # All Python dependencies
-├── attendance.csv      # Auto-generated attendance log
-├── database/
-│   └── trace.db        # SQLite database (auto-created)
+TRACE_FINAL/
+├── app.py                  # Main Flask application (all routes)
+├── face_utils.py           # Face embedding + matching utilities
+├── gait_utils.py           # Gait GEI extraction + embedding utilities
+├── models.py               # SQLAlchemy DB models (User with face+gait)
+├── requirements.txt
+├── modules/
+│   └── gait/
+│       ├── src/
+│       │   ├── phase1_video_to_gei.py        # YOLO silhouette extraction
+│       │   └── phase3_dataset_and_model.py   # ResNet-18 GEI model
+│       └── models/
+│           └── baseline_gait_model.pth       # Trained model weights
+├── templates/
+│   ├── base.html           # Dark Tailwind UI shell + nav
+│   ├── index.html          # Dashboard with live stats
+│   ├── register.html       # Face registration (webcam)
+│   ├── identify.html       # Face identification
+│   ├── register_gait.html  # Gait registration (video upload)
+│   ├── identify_gait.html  # Gait identification
+│   ├── fusion.html         # ⚡ Fusion attendance (both modalities)
+│   ├── attendance.html     # Attendance log with all scores
+│   └── users.html          # User management
 ├── static/
 │   ├── css/style.css
 │   └── js/webcam.js
-└── templates/
-    ├── base.html
-    ├── index.html
-    ├── register.html
-    ├── identify.html
-    ├── attendance.html
-    └── users.html
+├── database/               # SQLite DB (auto-created)
+├── uploads/                # Temp video uploads (auto-created)
+└── docs/results/           # Generated results/screenshots
 ```
 
 ---
 
-## 🛠️ Troubleshooting
+## Installation
 
-**`ModuleNotFoundError` for deepface / tensorflow**  
-→ Make sure your virtual environment is activated and you ran `pip install -r requirements.txt`.
+```bash
+# Clone the repo
+git clone <repo-url>
+cd TRACE_FINAL
 
-**Camera not working in browser**  
-→ Try Chrome or Edge. Firefox sometimes blocks webcam on localhost. Make sure no other app (Zoom, Teams) is using the camera.
+# Create virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
 
-**First identification is very slow**  
-→ Normal! DeepFace is loading the ArcFace model into memory. Subsequent ones are fast.
+# Install dependencies
+pip install -r requirements.txt
 
-**Face not recognized (confidence too low)**  
-→ Re-register in better lighting. The threshold is set to 68% cosine similarity — you can tune `THRESHOLD` in `face_utils.py`.
+# Run
+python app.py
+```
 
-**`pip install` fails on TensorFlow (Windows)**  
-→ Make sure you're using Python 3.9–3.11 (not 3.12+). Run `python --version` to check.
-
----
-
-## 🔒 Privacy Note
-
-TRACE stores **only mathematical vectors** (embeddings), never your actual photos or video. All data stays on your local machine — nothing is sent to the cloud.
+Open `http://localhost:5000` in your browser.
 
 ---
 
-## 📦 Key Dependencies
+## Usage
 
-- **[Flask](https://flask.palletsprojects.com/)** — Web framework
-- **[DeepFace](https://github.com/serengil/deepface)** — Face recognition (ArcFace + RetinaFace)
-- **[TensorFlow](https://www.tensorflow.org/)** — Deep learning backend for DeepFace
-- **[OpenCV](https://opencv.org/)** — Image processing
-- **[Flask-SQLAlchemy](https://flask-sqlalchemy.palletsprojects.com/)** — Database ORM
+### 1. Register a User (Face)
+- Go to **Register Face** → enter name + department
+- Capture 5–10 webcam frames
+- Face embedding stored in SQLite
+
+### 2. Register Gait
+- Go to **Register Gait** → select the registered user
+- Upload a 3–8 second walking video (side view preferred)
+- GEI extracted → 512-D embedding stored
+
+### 3. Take Attendance
+| Mode | Page | How |
+|------|------|-----|
+| Face only | `/identify` | Webcam snapshot → ArcFace match |
+| Gait only | `/identify-gait` | Upload walking video |
+| **Fusion** | `/fusion` | Face snapshot + gait video → adaptive fusion |
+
+### 4. View Logs
+- `/attendance` — all records with Face/Gait/Final scores + method badge
+- Download CSV button for export
 
 ---
 
-*TRACE — B.Tech Capstone Project · Phase 2: Face + Gait Recognition*
+## Key Results
+
+| Method | Condition | Performance |
+|--------|-----------|-------------|
+| Face Recognition | Clear, frontal | High accuracy (>80% conf.) |
+| Gait Recognition | Side/full-body walk | Stable across distances |
+| **TRACE Fusion** | Mixed / occluded | **Best robustness** |
+
+---
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/register` | POST (JSON) | Register face from base64 images |
+| `/api/identify` | POST (JSON) | Identify from base64 image |
+| `/api/register-gait` | POST (form) | Upload video → register gait |
+| `/api/identify-gait` | POST (form) | Upload video → gait identification |
+| `/api/identify-fusion` | POST (form) | Face image + gait video → fusion |
+| `/api/users` | GET | List all users |
+| `/api/users/<id>` | DELETE | Delete user |
+| `/api/attendance/download` | GET | Download attendance CSV |
+
+---
+
+## System Requirements
+
+- Python 3.10
+- Webcam (for face registration/identification)
+- GPU optional but recommended for gait (falls back to CPU)
+- 4 GB RAM minimum
+
+---
+
+## Authors
+
+- Ravulapally Anurag Sharma
+- Pentakota Hemanth Sai Kumar
+- Lokesh Modi
+- Karanbir Singh
+
+**Lovely Professional University — School of AI and Emerging Technologies**

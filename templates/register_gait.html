@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% block title %}Register Gait{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-6 py-12">
+
+  <div class="mb-8">
+    <h1 class="text-4xl font-extrabold text-violet-400">Register Gait</h1>
+    <p class="text-gray-500 text-sm mt-1">
+      Upload a short walking video (3–8 sec) to enroll a user's gait biometric
+    </p>
+  </div>
+
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl p-8 space-y-6">
+
+    <!-- Step 1: Select user -->
+    <div>
+      <label class="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
+        Step 1 — Select Registered User
+      </label>
+      <select id="userId"
+        class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3
+               text-white text-sm focus:outline-none focus:border-violet-500">
+        <option value="">— Choose a user —</option>
+        {% for user in users %}
+        <option value="{{ user.id }}">
+          {{ user.full_name }} ({{ user.department or 'General' }})
+          {% if user.has_gait() %}✅{% endif %}
+        </option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-600 mt-1">
+        User must be face-registered first. ✅ = gait already enrolled.
+      </p>
+    </div>
+
+    <!-- Step 2: Upload video -->
+    <div>
+      <label class="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
+        Step 2 — Upload Walking Video
+      </label>
+      <div id="dropZone"
+        class="border-2 border-dashed border-gray-700 rounded-xl p-8 text-center
+               hover:border-violet-600 transition cursor-pointer"
+        onclick="document.getElementById('videoFile').click()">
+        <span class="text-4xl block mb-3">🚶</span>
+        <p class="text-gray-400 text-sm font-medium">Click to upload or drag & drop</p>
+        <p class="text-gray-600 text-xs mt-1">MP4, AVI, MOV · 3–8 seconds walking · side view preferred</p>
+      </div>
+      <input type="file" id="videoFile" accept="video/*" class="hidden"
+             onchange="handleFileSelect(event)" />
+
+      <!-- Preview -->
+      <div id="videoPreview" class="hidden mt-4">
+        <p class="text-xs text-gray-500 mb-2 uppercase tracking-wider">Preview</p>
+        <video id="previewPlayer" controls
+          class="w-full rounded-xl border border-gray-700 max-h-64 object-contain bg-black">
+        </video>
+        <p id="fileName" class="text-xs text-gray-500 mt-2"></p>
+      </div>
+    </div>
+
+    <!-- Tips -->
+    <div class="bg-violet-900/20 border border-violet-800/40 rounded-xl p-4">
+      <p class="text-xs font-semibold text-violet-400 uppercase tracking-wider mb-2">
+        📹 Recording Tips
+      </p>
+      <ul class="text-xs text-gray-400 space-y-1 list-disc list-inside">
+        <li>Walk naturally at a steady pace</li>
+        <li>Side or 45° angle view works best</li>
+        <li>Ensure full body is visible</li>
+        <li>Avoid crowd or clutter in background</li>
+        <li>3–8 seconds is enough</li>
+      </ul>
+    </div>
+
+    <!-- Submit -->
+    <button id="submitBtn" onclick="submitGait()"
+      class="w-full bg-violet-600 hover:bg-violet-500 text-white font-bold
+             py-3 rounded-xl transition text-sm disabled:opacity-40"
+      disabled>
+      Register Gait Biometric
+    </button>
+
+    <!-- Status -->
+    <div id="status" class="hidden text-center py-4">
+      <div id="statusIcon" class="text-4xl mb-2"></div>
+      <p id="statusMsg" class="text-sm font-semibold"></p>
+      <p id="statusSub" class="text-xs text-gray-500 mt-1"></p>
+    </div>
+
+  </div>
+
+  <!-- Progress bar -->
+  <div id="progressWrap" class="hidden mt-4">
+    <p class="text-xs text-gray-500 mb-2 uppercase tracking-wider">Processing…</p>
+    <div class="w-full bg-gray-800 rounded-full h-2">
+      <div id="progressBar" class="bg-violet-500 h-2 rounded-full transition-all duration-500"
+           style="width: 0%"></div>
+    </div>
+    <p id="progressLabel" class="text-xs text-gray-600 mt-1">Extracting gait features…</p>
+  </div>
+
+</div>
+
+<script>
+let selectedFile = null;
+
+function handleFileSelect(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  selectedFile = file;
+
+  const url = URL.createObjectURL(file);
+  document.getElementById('previewPlayer').src = url;
+  document.getElementById('fileName').textContent = `${file.name} · ${(file.size/1024/1024).toFixed(1)} MB`;
+  document.getElementById('videoPreview').classList.remove('hidden');
+
+  updateSubmitBtn();
+}
+
+// Drag & drop
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('border-violet-500'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('border-violet-500'));
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  dz.classList.remove('border-violet-500');
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('video/')) {
+    selectedFile = file;
+    const fakeEvent = { target: { files: [file] } };
+    handleFileSelect(fakeEvent);
+  }
+});
+
+document.getElementById('userId').addEventListener('change', updateSubmitBtn);
+
+function updateSubmitBtn() {
+  const hasUser  = document.getElementById('userId').value !== '';
+  const hasFile  = selectedFile !== null;
+  document.getElementById('submitBtn').disabled = !(hasUser && hasFile);
+}
+
+async function submitGait() {
+  const userId = document.getElementById('userId').value;
+  if (!userId || !selectedFile) return;
+
+  document.getElementById('submitBtn').disabled = true;
+  document.getElementById('progressWrap').classList.remove('hidden');
+  document.getElementById('status').classList.add('hidden');
+
+  const steps = [
+    [20,  'Loading video frames…'],
+    [45,  'Extracting silhouettes…'],
+    [70,  'Generating Gait Energy Image…'],
+    [90,  'Computing 512-D embedding…'],
+  ];
+  let si = 0;
+  const bar = document.getElementById('progressBar');
+  const lbl = document.getElementById('progressLabel');
+
+  const timer = setInterval(() => {
+    if (si < steps.length) {
+      bar.style.width = steps[si][0] + '%';
+      lbl.textContent = steps[si][1];
+      si++;
+    }
+  }, 900);
+
+  const formData = new FormData();
+  formData.append('user_id', userId);
+  formData.append('video', selectedFile);
+
+  try {
+    const res  = await fetch('/api/register-gait', { method: 'POST', body: formData });
+    const data = await res.json();
+
+    clearInterval(timer);
+    bar.style.width = '100%';
+
+    const statusEl = document.getElementById('status');
+    statusEl.classList.remove('hidden');
+
+    if (data.success) {
+      document.getElementById('statusIcon').textContent = '✅';
+      document.getElementById('statusMsg').textContent  = data.message;
+      document.getElementById('statusMsg').className    = 'text-sm font-semibold text-emerald-400';
+      document.getElementById('statusSub').textContent  = 'Gait biometric stored securely.';
+    } else {
+      document.getElementById('statusIcon').textContent = '❌';
+      document.getElementById('statusMsg').textContent  = data.error || 'Registration failed';
+      document.getElementById('statusMsg').className    = 'text-sm font-semibold text-red-400';
+      document.getElementById('statusSub').textContent  = 'Try a different video (better lighting, side view).';
+      document.getElementById('submitBtn').disabled = false;
+    }
+  } catch (err) {
+    clearInterval(timer);
+    document.getElementById('status').classList.remove('hidden');
+    document.getElementById('statusIcon').textContent = '⚠️';
+    document.getElementById('statusMsg').textContent  = 'Server error. Check console.';
+    document.getElementById('statusMsg').className    = 'text-sm font-semibold text-yellow-400';
+    document.getElementById('submitBtn').disabled = false;
+  }
+}
+</script>
+{% endblock %}

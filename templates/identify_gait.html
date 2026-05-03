@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Identify via Gait{% endblock %}
+
+{% block content %}
+<div class="max-w-xl mx-auto px-6 py-12">
+
+  <div class="mb-8">
+    <h1 class="text-4xl font-extrabold text-violet-400">Gait Recognition</h1>
+    <p class="text-gray-500 text-sm mt-1">
+      Upload a walking video to identify a person and log attendance
+    </p>
+  </div>
+
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl p-8 space-y-6">
+
+    <!-- Upload -->
+    <div>
+      <label class="block text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
+        Walking Video
+      </label>
+      <div id="dropZone"
+        class="border-2 border-dashed border-gray-700 rounded-xl p-8 text-center
+               hover:border-violet-600 transition cursor-pointer"
+        onclick="document.getElementById('videoFile').click()">
+        <span class="text-4xl block mb-3">🎥</span>
+        <p class="text-gray-400 text-sm font-medium">Click to upload or drag & drop</p>
+        <p class="text-gray-600 text-xs mt-1">MP4, AVI, MOV · 3–8 seconds</p>
+      </div>
+      <input type="file" id="videoFile" accept="video/*" class="hidden"
+             onchange="handleFile(event)" />
+
+      <div id="previewWrap" class="hidden mt-4">
+        <video id="preview" controls
+          class="w-full rounded-xl border border-gray-700 max-h-56 object-contain bg-black">
+        </video>
+        <p id="fileName" class="text-xs text-gray-500 mt-2"></p>
+      </div>
+    </div>
+
+    <!-- Identify button -->
+    <button id="identifyBtn" onclick="identify()" disabled
+      class="w-full bg-violet-600 hover:bg-violet-500 disabled:opacity-40
+             text-white font-bold py-3 rounded-xl transition text-sm">
+      🚶 Identify via Gait
+    </button>
+
+    <!-- Progress -->
+    <div id="progressWrap" class="hidden">
+      <div class="w-full bg-gray-800 rounded-full h-1.5 mb-2">
+        <div id="progressBar" class="bg-violet-500 h-1.5 rounded-full transition-all"
+             style="width:0%"></div>
+      </div>
+      <p id="progressLabel" class="text-xs text-gray-500">Analysing gait…</p>
+    </div>
+
+    <!-- Result -->
+    <div id="result" class="hidden rounded-2xl border p-6 text-center">
+      <div id="resultIcon" class="text-5xl mb-3"></div>
+      <p id="resultName" class="text-2xl font-extrabold mb-1"></p>
+      <p id="resultSub"  class="text-sm text-gray-400"></p>
+
+      <!-- Score bars -->
+      <div id="scoreBars" class="mt-6 space-y-3 text-left hidden">
+        <div>
+          <div class="flex justify-between text-xs text-gray-500 mb-1">
+            <span>Gait Confidence</span>
+            <span id="gaitPct">—</span>
+          </div>
+          <div class="w-full bg-gray-800 rounded-full h-2">
+            <div id="gaitBar" class="h-2 rounded-full bg-violet-500 transition-all" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Link to fusion -->
+    <div class="bg-gray-800/50 border border-gray-700 rounded-xl p-4 text-center">
+      <p class="text-xs text-gray-400 mb-2">Want stronger identification?</p>
+      <a href="/fusion"
+        class="text-sm font-semibold text-cyan-400 hover:text-cyan-300 transition">
+        Use Face + Gait Fusion →
+      </a>
+    </div>
+
+  </div>
+</div>
+
+<script>
+let selectedFile = null;
+
+function handleFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  selectedFile = file;
+  document.getElementById('preview').src = URL.createObjectURL(file);
+  document.getElementById('fileName').textContent = `${file.name} · ${(file.size/1024/1024).toFixed(1)} MB`;
+  document.getElementById('previewWrap').classList.remove('hidden');
+  document.getElementById('identifyBtn').disabled = false;
+}
+
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('border-violet-500'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('border-violet-500'));
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  dz.classList.remove('border-violet-500');
+  const file = e.dataTransfer.files[0];
+  if (file?.type.startsWith('video/')) {
+    selectedFile = file;
+    document.getElementById('preview').src = URL.createObjectURL(file);
+    document.getElementById('fileName').textContent = file.name;
+    document.getElementById('previewWrap').classList.remove('hidden');
+    document.getElementById('identifyBtn').disabled = false;
+  }
+});
+
+async function identify() {
+  if (!selectedFile) return;
+  document.getElementById('identifyBtn').disabled = true;
+  document.getElementById('result').classList.add('hidden');
+  document.getElementById('progressWrap').classList.remove('hidden');
+
+  const steps = [[25,'Extracting frames…'],[55,'Building silhouettes…'],[80,'Matching gait…']];
+  let si = 0;
+  const bar = document.getElementById('progressBar');
+  const lbl = document.getElementById('progressLabel');
+  const timer = setInterval(() => {
+    if (si < steps.length) { bar.style.width = steps[si][0]+'%'; lbl.textContent = steps[si][1]; si++; }
+  }, 800);
+
+  const fd = new FormData();
+  fd.append('video', selectedFile);
+
+  try {
+    const res  = await fetch('/api/identify-gait', { method: 'POST', body: fd });
+    const data = await res.json();
+    clearInterval(timer);
+    bar.style.width = '100%';
+    setTimeout(() => document.getElementById('progressWrap').classList.add('hidden'), 300);
+
+    const r = document.getElementById('result');
+    r.classList.remove('hidden', 'border-emerald-800', 'border-red-800',
+                        'bg-emerald-900/20', 'bg-red-900/20');
+
+    if (data.identified) {
+      r.classList.add('border-emerald-800', 'bg-emerald-900/20');
+      document.getElementById('resultIcon').textContent = '✅';
+      document.getElementById('resultName').textContent = data.name;
+      document.getElementById('resultName').className   = 'text-2xl font-extrabold text-emerald-400 mb-1';
+      document.getElementById('resultSub').textContent  =
+        `Attendance logged via Gait · ${data.confidence}% confidence`;
+      document.getElementById('scoreBars').classList.remove('hidden');
+      document.getElementById('gaitPct').textContent = `${data.confidence}%`;
+      document.getElementById('gaitBar').style.width  = `${data.confidence}%`;
+    } else {
+      r.classList.add('border-red-800', 'bg-red-900/20');
+      document.getElementById('resultIcon').textContent = '❌';
+      document.getElementById('resultName').textContent = 'Not Recognized';
+      document.getElementById('resultName').className   = 'text-2xl font-extrabold text-red-400 mb-1';
+      document.getElementById('resultSub').textContent  =
+        data.error || `${data.message} · Score: ${data.confidence}%`;
+    }
+  } catch (err) {
+    clearInterval(timer);
+    document.getElementById('result').classList.remove('hidden');
+    document.getElementById('resultIcon').textContent = '⚠️';
+    document.getElementById('resultName').textContent = 'Error';
+    document.getElementById('resultSub').textContent  = String(err);
+  }
+  document.getElementById('identifyBtn').disabled = false;
+}
+</script>
+{% endblock %}

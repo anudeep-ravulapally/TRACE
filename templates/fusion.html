@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+{% block title %}Fusion Attendance{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-6 py-12">
+
+  <div class="mb-8">
+    <h1 class="text-4xl font-extrabold text-cyan-400">Fusion Attendance</h1>
+    <p class="text-gray-500 text-sm mt-1">
+      Combined Face + Gait recognition with adaptive score-level fusion
+    </p>
+  </div>
+
+  <!-- Fusion explainer badge -->
+  <div class="bg-gray-900 border border-cyan-900 rounded-xl px-5 py-3 mb-6 flex gap-3 items-start">
+    <span class="text-2xl">⚡</span>
+    <div>
+      <p class="text-sm font-semibold text-cyan-400">Adaptive Fusion Engine</p>
+      <p class="text-xs text-gray-500 mt-0.5">
+        If face is clear → 70% Face + 30% Gait. If face is occluded → 30% Face + 70% Gait.
+        Final score must exceed 50% to confirm identity.
+      </p>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-6">
+
+    <!-- Face panel -->
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+      <h2 class="text-sm font-bold text-white uppercase tracking-wider mb-4">
+        📸 Face Module
+      </h2>
+      <div class="relative rounded-xl overflow-hidden bg-black aspect-video mb-4
+                  flex items-center justify-center border border-gray-800">
+        <video id="webcam" autoplay playsinline class="w-full h-full object-cover"></video>
+        <div id="camPlaceholder"
+          class="absolute inset-0 flex flex-col items-center justify-center text-gray-700">
+          <span class="text-4xl mb-2">📸</span>
+          <span class="text-xs">Camera off</span>
+        </div>
+      </div>
+      <canvas id="canvas" class="hidden"></canvas>
+      <button onclick="toggleCamera()"
+        class="w-full bg-gray-800 hover:bg-gray-700 border border-gray-700
+               text-white font-semibold py-2 rounded-xl transition text-sm" id="camBtn">
+        Start Camera
+      </button>
+      <div id="faceStatus" class="mt-2 text-xs text-gray-600 text-center">Waiting…</div>
+    </div>
+
+    <!-- Gait panel -->
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+      <h2 class="text-sm font-bold text-white uppercase tracking-wider mb-4">
+        🚶 Gait Module
+      </h2>
+      <div id="gaitDropZone"
+        class="border-2 border-dashed border-gray-700 rounded-xl p-6 text-center
+               hover:border-violet-600 transition cursor-pointer mb-4"
+        onclick="document.getElementById('gaitFile').click()">
+        <span class="text-3xl block mb-2">🎥</span>
+        <p class="text-xs text-gray-400">Upload walking video</p>
+        <p class="text-xs text-gray-600 mt-0.5">MP4 · 3–8 sec</p>
+      </div>
+      <input type="file" id="gaitFile" accept="video/*" class="hidden"
+             onchange="handleGaitFile(event)" />
+      <div id="gaitStatus" class="text-xs text-gray-600 text-center">No video selected</div>
+    </div>
+  </div>
+
+  <!-- Identify button -->
+  <button id="fusionBtn" onclick="runFusion()"
+    class="w-full bg-gradient-to-r from-cyan-600 to-violet-600 hover:from-cyan-500
+           hover:to-violet-500 text-white font-extrabold py-4 rounded-2xl
+           transition text-base tracking-wide mb-4">
+    ⚡ Identify via Fusion
+  </button>
+
+  <!-- Progress -->
+  <div id="progressWrap" class="hidden mb-4">
+    <div class="w-full bg-gray-800 rounded-full h-2">
+      <div id="progressBar" class="h-2 rounded-full bg-gradient-to-r from-cyan-500 to-violet-500
+           transition-all" style="width:0%"></div>
+    </div>
+    <p id="progressLabel" class="text-xs text-gray-500 mt-1">Processing…</p>
+  </div>
+
+  <!-- Result -->
+  <div id="result" class="hidden bg-gray-900 border rounded-2xl p-8 text-center">
+    <div id="resultIcon" class="text-6xl mb-4"></div>
+    <p id="resultName" class="text-3xl font-extrabold mb-1"></p>
+    <p id="resultMethod" class="text-xs text-gray-500 uppercase tracking-widest mb-6"></p>
+
+    <!-- Score breakdown -->
+    <div id="scoreBreakdown" class="space-y-4 text-left">
+      <div>
+        <div class="flex justify-between text-xs text-gray-500 mb-1">
+          <span>Face Score <span id="alpha" class="text-cyan-500"></span></span>
+          <span id="facePct">—</span>
+        </div>
+        <div class="w-full bg-gray-800 rounded-full h-2">
+          <div id="faceBar" class="h-2 rounded-full bg-cyan-500 transition-all" style="width:0%"></div>
+        </div>
+      </div>
+      <div>
+        <div class="flex justify-between text-xs text-gray-500 mb-1">
+          <span>Gait Score <span id="beta" class="text-violet-400"></span></span>
+          <span id="gaitPct">—</span>
+        </div>
+        <div class="w-full bg-gray-800 rounded-full h-2">
+          <div id="gaitBar" class="h-2 rounded-full bg-violet-500 transition-all" style="width:0%"></div>
+        </div>
+      </div>
+      <div class="pt-3 border-t border-gray-800">
+        <div class="flex justify-between text-xs text-white font-bold mb-1">
+          <span>Final Fused Score</span>
+          <span id="finalPct">—</span>
+        </div>
+        <div class="w-full bg-gray-800 rounded-full h-3">
+          <div id="finalBar" class="h-3 rounded-full bg-gradient-to-r from-cyan-500 to-violet-500
+               transition-all" style="width:0%"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let cameraOn   = false;
+let stream     = null;
+let gaitFile   = null;
+let capturedB64 = null;
+
+async function toggleCamera() {
+  if (cameraOn) {
+    stream.getTracks().forEach(t => t.stop());
+    cameraOn = false;
+    document.getElementById('camBtn').textContent = 'Start Camera';
+    document.getElementById('camPlaceholder').style.display = 'flex';
+    document.getElementById('faceStatus').textContent = 'Waiting…';
+  } else {
+    stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    document.getElementById('webcam').srcObject = stream;
+    document.getElementById('camPlaceholder').style.display = 'none';
+    document.getElementById('camBtn').textContent = 'Capture Frame';
+    document.getElementById('faceStatus').textContent = 'Camera live — click Capture Frame';
+    cameraOn = true;
+    document.getElementById('camBtn').onclick = captureFrame;
+  }
+}
+
+function captureFrame() {
+  const video  = document.getElementById('webcam');
+  const canvas = document.getElementById('canvas');
+  canvas.width  = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  capturedB64 = canvas.toDataURL('image/jpeg', 0.9);
+  document.getElementById('faceStatus').textContent = '✅ Frame captured';
+}
+
+function handleGaitFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  gaitFile = file;
+  document.getElementById('gaitStatus').textContent = `✅ ${file.name}`;
+}
+
+const gdz = document.getElementById('gaitDropZone');
+gdz.addEventListener('dragover', e => { e.preventDefault(); gdz.classList.add('border-violet-500'); });
+gdz.addEventListener('dragleave', () => gdz.classList.remove('border-violet-500'));
+gdz.addEventListener('drop', e => {
+  e.preventDefault();
+  gdz.classList.remove('border-violet-500');
+  const file = e.dataTransfer.files[0];
+  if (file?.type.startsWith('video/')) {
+    gaitFile = file;
+    document.getElementById('gaitStatus').textContent = `✅ ${file.name}`;
+  }
+});
+
+async function runFusion() {
+  if (!capturedB64 && !gaitFile) {
+    alert('Please capture a face frame and/or upload a gait video.');
+    return;
+  }
+  document.getElementById('fusionBtn').disabled = true;
+  document.getElementById('result').classList.add('hidden');
+  document.getElementById('progressWrap').classList.remove('hidden');
+
+  const steps = [[15,'Capturing biometrics…'],[40,'Running face pipeline…'],
+                 [65,'Running gait pipeline…'],[85,'Fusing scores…']];
+  let si = 0;
+  const bar = document.getElementById('progressBar');
+  const lbl = document.getElementById('progressLabel');
+  const timer = setInterval(() => {
+    if (si < steps.length) { bar.style.width = steps[si][0]+'%'; lbl.textContent = steps[si][1]; si++; }
+  }, 700);
+
+  const fd = new FormData();
+  if (capturedB64) fd.append('image', capturedB64);
+  if (gaitFile)    fd.append('video', gaitFile);
+
+  try {
+    const res  = await fetch('/api/identify-fusion', { method: 'POST', body: fd });
+    const data = await res.json();
+    clearInterval(timer);
+    bar.style.width = '100%';
+    setTimeout(() => document.getElementById('progressWrap').classList.add('hidden'), 300);
+
+    const r = document.getElementById('result');
+    r.classList.remove('hidden', 'border-emerald-800', 'border-red-800',
+                       'bg-emerald-900/20', 'bg-red-900/20');
+
+    if (data.identified) {
+      r.classList.add('border-emerald-800', 'bg-emerald-900/20');
+      document.getElementById('resultIcon').textContent = '✅';
+      document.getElementById('resultName').textContent = data.name;
+      document.getElementById('resultName').className   = 'text-3xl font-extrabold text-emerald-400 mb-1';
+    } else {
+      r.classList.add('border-red-800', 'bg-red-900/20');
+      document.getElementById('resultIcon').textContent = '❌';
+      document.getElementById('resultName').textContent = 'Not Confirmed';
+      document.getElementById('resultName').className   = 'text-3xl font-extrabold text-red-400 mb-1';
+    }
+
+    document.getElementById('resultMethod').textContent = data.method || '';
+    document.getElementById('alpha').textContent = data.alpha ? `(α=${data.alpha})` : '';
+    document.getElementById('beta').textContent  = data.beta  ? `(β=${data.beta})`  : '';
+
+    const fs = data.face_score  ?? 0;
+    const gs = data.gait_score  ?? 0;
+    const fn = data.final_score ?? 0;
+
+    document.getElementById('facePct').textContent  = `${fs}%`;
+    document.getElementById('gaitPct').textContent  = `${gs}%`;
+    document.getElementById('finalPct').textContent = `${fn}%`;
+    document.getElementById('faceBar').style.width  = `${fs}%`;
+    document.getElementById('gaitBar').style.width  = `${gs}%`;
+    document.getElementById('finalBar').style.width = `${fn}%`;
+
+  } catch (err) {
+    clearInterval(timer);
+    document.getElementById('result').classList.remove('hidden');
+    document.getElementById('resultIcon').textContent = '⚠️';
+    document.getElementById('resultName').textContent = 'Error';
+    document.getElementById('resultName').className   = 'text-3xl font-extrabold text-yellow-400 mb-1';
+    document.getElementById('resultMethod').textContent = String(err);
+  }
+  document.getElementById('fusionBtn').disabled = false;
+}
+</script>
+{% endblock %}
