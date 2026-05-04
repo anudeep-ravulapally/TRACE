@@ -350,7 +350,7 @@ async function runFusion() {
   if (gaitPayload) {
     // Choose extension that matches the recorded mime so the backend's
     // suffix sniff (`os.path.splitext(filename)[1]`) keeps working.
-    const ext = gaitPayload.mime.includes('mp4') ? 'mp4' : 'webm';
+    const ext = gaitPayload.mime.startsWith('video/mp4') ? 'mp4' : 'webm';
     fd.append('video', gaitPayload.blob, `gait_${Date.now()}.${ext}`);
   }
 

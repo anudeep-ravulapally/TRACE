@@ -248,19 +248,26 @@ def register_gait():
     video_lr = request.files.get("video_lr")
     video_rl = request.files.get("video_rl")
 
-    if not video_lr and not video_rl:
+    # Dual-angle enrollment: both LR and RL clips are required so every user
+    # has full coverage of the L→R / R→L covariate shift at match time.
+    if not video_lr or not video_rl:
         return jsonify({
-            "error": "Both Left-to-Right and Right-to-Left video uploads are required."
+            "error": "Both Left-to-Right (video_lr) and Right-to-Left "
+                     "(video_rl) video uploads are required."
         }), 400
 
     def _extract(video, tag):
-        """Save upload to a sandboxed temp path and run the gait pipeline."""
-        # Whitelist the suffix so a hostile ``video.filename`` cannot inject
-        # path separators / traversal segments into ``tmp_path``.
-        ext = os.path.splitext(video.filename or "")[1].lower()
-        if not (1 <= len(ext) <= _MAX_EXT_LEN) or not ext[1:].isalnum():
-            ext = ".mp4"
-        tmp_path = os.path.join(UPLOAD_DIR, f"gait_reg_{user_id}_{tag}{ext}")
+        """Save upload to a sandboxed temp path and run the gait pipeline.
+
+        The temp filename is built **entirely** from trusted values
+        (``UPLOAD_DIR``, the integer ``user_id``, the literal ``tag``, and a
+        fixed extension) — the user-controlled ``video.filename`` is never
+        interpolated, so there is no path-injection surface here. The gait
+        pipeline reads via OpenCV / FFmpeg which sniff format from content,
+        so a hardcoded ``.mp4`` suffix is fine for any uploaded container.
+        """
+        # ``tag`` is one of "lr" / "rl" (literals), ``user_id`` is an int.
+        tmp_path = os.path.join(UPLOAD_DIR, f"gait_reg_{user_id}_{tag}.mp4")
         video.save(tmp_path)
         try:
             return get_gait_embedding_from_video(tmp_path)
