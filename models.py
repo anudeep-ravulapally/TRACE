@@ -3,14 +3,31 @@ from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
 
+
 class User(db.Model):
+    """A registered TRACE user.
+
+    Gait enrollment now uses a **dual-angle** schema: a separate 512-d
+    embedding is stored for a Left-to-Right walk clip and a Right-to-Left
+    walk clip. This mitigates the L→R vs R→L covariate shift we observed at
+    inference time. Either column may be ``None`` while the user is being
+    progressively enrolled; ``has_gait()`` is true as soon as one is set.
+
+    The face column is unchanged (single averaged ArcFace embedding).
+    """
+
     id = db.Column(db.Integer, primary_key=True)
     full_name = db.Column(db.String(100), nullable=False)
     department = db.Column(db.String(100), nullable=True, default="General")
-    embedding = db.Column(db.Text, nullable=True)      # Face: JSON 512-d
-    gait_embedding = db.Column(db.Text, nullable=True) # Gait: JSON 512-d
 
-    # --- Face Methods ---
+    # Face: JSON 512-d list
+    embedding = db.Column(db.Text, nullable=True)
+
+    # Gait: JSON 512-d lists, one per walking direction.
+    gait_embedding_lr = db.Column(db.Text, nullable=True)  # Left-to-Right clip
+    gait_embedding_rl = db.Column(db.Text, nullable=True)  # Right-to-Left clip
+
+    # ── Face Methods ───────────────────────────────────────────────────
     def set_embedding(self, embedding_list):
         self.embedding = json.dumps(embedding_list)
 
@@ -18,86 +35,52 @@ class User(db.Model):
         if self.embedding is None:
             return None
         return json.loads(self.embedding)
-        
+
     def has_face(self):
         return self.embedding is not None
 
-    # --- Gait Methods ---
-    # The ``gait_embedding`` text column stores JSON in one of two shapes:
-    #   - a flat list of floats (single-clip, legacy)
-    #   - a list of flat lists (multi-clip enrollment, new)
-    # Both shapes are accepted by readers; writers persist whichever shape the
-    # caller asks for. ``get_gait_embeddings()`` (plural) always returns the
-    # multi-clip view, while ``get_gait_embedding()`` (singular) returns the
-    # mean of all clips for backward compatibility with code that expects one
-    # vector per user.
-
-    @staticmethod
-    def _is_multi_clip(parsed):
-        """Detect whether parsed JSON is a list-of-lists (multi-clip)."""
-        return (
-            isinstance(parsed, list)
-            and len(parsed) > 0
-            and isinstance(parsed[0], list)
+    # ── Gait Methods (dual-angle) ──────────────────────────────────────
+    def set_gait_embedding_lr(self, embedding_list):
+        """Store the Left-to-Right walk embedding (or clear it with None)."""
+        self.gait_embedding_lr = (
+            json.dumps(list(embedding_list)) if embedding_list else None
         )
 
-    def set_gait_embedding(self, embedding_list):
-        """Store a single 512-d embedding (legacy single-clip API)."""
-        self.gait_embedding = json.dumps(embedding_list)
-
-    def set_gait_embeddings(self, embedding_lists):
-        """Store multiple clip embeddings for this user (multi-clip enrollment).
-
-        ``embedding_lists`` is an iterable of 512-d lists. An empty input
-        clears the stored embedding.
-        """
-        clips = [list(e) for e in embedding_lists if e]
-        if not clips:
-            self.gait_embedding = None
-            return
-        self.gait_embedding = json.dumps(clips)
-
-    def add_gait_embedding(self, embedding_list):
-        """Append a clip embedding without losing previously enrolled ones."""
-        existing = self.get_gait_embeddings() or []
-        existing.append(list(embedding_list))
-        self.set_gait_embeddings(existing)
-
-    def get_gait_embedding(self):
-        """Return the user's gait embedding as a single 512-d list.
-
-        For multi-clip storage, returns the (unnormalized) **mean** of all
-        stored clips so callers that expect one vector still work.
-        """
-        if self.gait_embedding is None:
+    def get_gait_embedding_lr(self):
+        if self.gait_embedding_lr is None:
             return None
-        parsed = json.loads(self.gait_embedding)
-        if not self._is_multi_clip(parsed):
-            return parsed
-        # Multi-clip → mean across clips. We deliberately don't L2-normalize
-        # here because gait_utils handles normalization based on model config.
-        n = len(parsed)
-        if n == 0:
+        return json.loads(self.gait_embedding_lr)
+
+    def set_gait_embedding_rl(self, embedding_list):
+        """Store the Right-to-Left walk embedding (or clear it with None)."""
+        self.gait_embedding_rl = (
+            json.dumps(list(embedding_list)) if embedding_list else None
+        )
+
+    def get_gait_embedding_rl(self):
+        if self.gait_embedding_rl is None:
             return None
-        dim = len(parsed[0])
-        out = [0.0] * dim
-        for clip in parsed:
-            for i, v in enumerate(clip):
-                out[i] += v
-        return [v / n for v in out]
+        return json.loads(self.gait_embedding_rl)
 
     def get_gait_embeddings(self):
-        """Return all stored clip embeddings as a list of 512-d lists.
+        """Return all stored gait clip embeddings as a list of 512-d lists.
 
-        Always returns a list (possibly with one element). ``None`` only when
-        no embedding has been stored.
+        Used by ``gait_utils.find_best_gait_match`` which takes the per-user
+        max of cosine similarities across whichever clips the user has
+        enrolled. Returns ``None`` when neither direction is set so callers
+        can skip the user cleanly.
         """
-        if self.gait_embedding is None:
-            return None
-        parsed = json.loads(self.gait_embedding)
-        if self._is_multi_clip(parsed):
-            return parsed
-        return [parsed]
+        clips = []
+        lr = self.get_gait_embedding_lr()
+        if lr:
+            clips.append(lr)
+        rl = self.get_gait_embedding_rl()
+        if rl:
+            clips.append(rl)
+        return clips or None
 
     def has_gait(self):
-        return self.gait_embedding is not None
+        return (
+            self.gait_embedding_lr is not None
+            or self.gait_embedding_rl is not None
+        )

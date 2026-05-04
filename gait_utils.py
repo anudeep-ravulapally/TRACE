@@ -342,15 +342,38 @@ def vanity_score(scaled: float) -> float:
 def _user_clip_embeddings(user) -> list:
     """Return a (possibly empty) list of stored clip embeddings for a user.
 
-    Uses ``get_gait_embeddings`` (plural, multi-clip) if the User model
-    exposes it, otherwise falls back to the single-clip ``get_gait_embedding``.
+    With the dual-angle schema we look for ``get_gait_embedding_lr`` and
+    ``get_gait_embedding_rl`` first, returning whichever of the two are
+    populated (so a probe is compared against BOTH directions and the best
+    of the two wins). For backwards compatibility with older test fixtures
+    we fall back to ``get_gait_embeddings`` (multi-clip) and finally to the
+    single-clip ``get_gait_embedding``.
     """
-    fn = getattr(user, "get_gait_embeddings", None)
-    if callable(fn):
-        clips = fn() or []
-        return [c for c in clips if c]
-    single = user.get_gait_embedding()
-    return [single] if single else []
+    clips = []
+    lr_fn = getattr(user, "get_gait_embedding_lr", None)
+    rl_fn = getattr(user, "get_gait_embedding_rl", None)
+    if callable(lr_fn) or callable(rl_fn):
+        if callable(lr_fn):
+            lr = lr_fn()
+            if lr:
+                clips.append(lr)
+        if callable(rl_fn):
+            rl = rl_fn()
+            if rl:
+                clips.append(rl)
+        if clips:
+            return clips
+
+    multi_fn = getattr(user, "get_gait_embeddings", None)
+    if callable(multi_fn):
+        multi = multi_fn() or []
+        return [c for c in multi if c]
+
+    single_fn = getattr(user, "get_gait_embedding", None)
+    if callable(single_fn):
+        single = single_fn()
+        return [single] if single else []
+    return []
 
 
 def find_best_gait_match(new_embedding: list, all_users) -> tuple:
@@ -373,9 +396,12 @@ def find_best_gait_match(new_embedding: list, all_users) -> tuple:
         enrolled user, so ``top1 − top2`` is tiny.
 
     Behaviour:
-      - **Multi-clip galleries**: each user contributes one or more enrollment
-        clip embeddings. The user's similarity is the **maximum** cosine
-        across their clips (top-1 score fusion).
+      - **Dual-angle galleries (current schema)**: each user contributes up
+        to two enrollment clip embeddings — Left-to-Right and Right-to-Left.
+        The user's similarity is the **maximum** cosine across their two
+        clips (``max(sim(probe, lr), sim(probe, rl))``), which mitigates the
+        L→R vs R→L covariate shift at inference. Older multi-clip galleries
+        are handled the same way (max across whatever clips are stored).
       - **v2 (raw-cosine) models**: the threshold operates directly on cosine.
       - **v1 (legacy) models**: the Min-Max "Confidence Punisher" is applied
         to preserve previously-calibrated thresholds.
