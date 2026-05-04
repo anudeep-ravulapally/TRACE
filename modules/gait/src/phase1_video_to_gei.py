@@ -6,13 +6,21 @@ from PIL import Image
 import os
 from pathlib import Path
 
-def extract_gei_from_video(video_path, output_path):
+def extract_gei_from_video(video_path, output_path, model=None, device=None):
+    """Extract a Gait Energy Image from a single video.
+
+    The YOLO ``model`` and ``device`` can be passed in so callers can load
+    them once and reuse them across many videos (much faster than
+    re-instantiating the model per video).
+    """
     print(f"\nProcessing video: {video_path.name}...")
-    
-    # 1. Load YOLOv8 Segmentation Model 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = YOLO('yolov8n-seg.pt') 
-    
+
+    # Load YOLOv8 Segmentation Model only if not provided by the caller.
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if model is None:
+        model = YOLO('yolov8n-seg.pt')
+
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         print(f"Error: Could not open video {video_path}")
@@ -72,7 +80,14 @@ if __name__ == "__main__":
         exit()
 
     print("Starting automated Phase 0 extraction...")
-    
+
+    # Load YOLO model ONCE here, then reuse across every video. Loading the
+    # YOLO weights inside the per-video function (the previous behaviour)
+    # was a major bottleneck — a single model load takes seconds and was
+    # being repeated for every input video.
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    yolo_model = YOLO('yolov8n-seg.pt')
+
     # Iterate through every person's folder in Raw_Video_Data
     for person_folder in RAW_DATA_DIR.iterdir():
         if person_folder.is_dir():
@@ -93,6 +108,7 @@ if __name__ == "__main__":
                     continue # Skips to the next video without processing
                 
                 # If it doesn't exist, run the heavy extraction
-                extract_gei_from_video(video_file, output_path)
+                extract_gei_from_video(video_file, output_path,
+                                       model=yolo_model, device=device)
                 
     print("\n🎉 Phase 1 Complete! All raw videos converted to GEIs in TRACE_Gallery.")

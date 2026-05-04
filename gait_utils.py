@@ -9,22 +9,19 @@ Designed to be imported into app.py exactly like face_utils.py.
 """
 
 import os
-import sys
 import cv2
 import numpy as np
 import torch
 from pathlib import Path
 from PIL import Image
 
-# ── Add gait module to path ────────────────────────────────────────────
-GAIT_SRC = os.path.join(os.path.dirname(__file__), "modules", "gait", "src")
+# ── Paths ──────────────────────────────────────────────────────────────
 GAIT_MODEL_PATH = os.path.join(os.path.dirname(__file__), "modules", "gait", "models",
                                 "baseline_gait_model.pth")
-sys.path.insert(0, GAIT_SRC)
+
 from modules.gait.src.phase3_dataset_and_model import BaselineGaitCNN
 
 from torchvision import transforms
-from sklearn.metrics.pairwise import cosine_similarity as sk_cosine
 
 # ── Constants ──────────────────────────────────────────────────────────
 GAIT_THRESHOLD   = 0.50   # Checked against SCALED confidence, not raw score
@@ -44,6 +41,8 @@ _transform = transforms.Compose([
 ])
 
 _gait_model = None
+_yolo_model = None
+
 
 def _get_model():
     global _gait_model
@@ -59,6 +58,28 @@ def _get_model():
     return _gait_model
 
 
+def _get_yolo():
+    """Lazy-load the YOLOv8-seg model exactly once per process.
+
+    Returns the model instance, or None if ultralytics/YOLO weights are not
+    available (caller should fall back to the MOG2 path).
+    """
+    global _yolo_model
+    if _yolo_model is not None:
+        return _yolo_model
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        return None
+    try:
+        _yolo_model = YOLO("yolov8n-seg.pt")
+    except Exception:
+        # Model file missing or load failure — leave cache as None so we don't
+        # retry-load every call, but only for this process lifetime.
+        return None
+    return _yolo_model
+
+
 # ── Public API ─────────────────────────────────────────────────────────
 
 def video_to_gei(video_path: str) -> np.ndarray:
@@ -66,50 +87,59 @@ def video_to_gei(video_path: str) -> np.ndarray:
     Convert an .mp4 video to a Gait Energy Image (GEI).
 
     Uses YOLOv8-seg for person segmentation + silhouette averaging.
-    Falls back to frame-differencing background subtraction if YOLO unavailable.
+    Falls back to MOG2 background subtraction if YOLO is unavailable or
+    fails to detect any person in the video.
 
     Returns:
         numpy uint8 array of shape (64, 64) — the GEI
     Raises:
         ValueError if no person detected or video unreadable
     """
-    try:
-        from ultralytics import YOLO
-        _yolo_video_to_gei(video_path)      # writes to tmp, returns path
-    except ImportError:
-        pass
+    yolo = _get_yolo()
+    if yolo is not None:
+        try:
+            return _yolo_video_to_gei(video_path, yolo)
+        except ValueError:
+            # No person detected via YOLO — try fallback before giving up.
+            pass
 
     return _fallback_video_to_gei(video_path)
 
 
-def _yolo_video_to_gei(video_path: str) -> np.ndarray:
+def _yolo_video_to_gei(video_path: str, yolo=None) -> np.ndarray:
     """YOLO-based GEI extraction (preferred)."""
-    from ultralytics import YOLO
-    yolo = YOLO("yolov8n-seg.pt")
+    if yolo is None:
+        yolo = _get_yolo()
+        if yolo is None:
+            raise ValueError("YOLO model unavailable.")
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
 
     silhouettes = []
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        results = yolo(frame, classes=[0], verbose=False, device=_device)
-        for result in results:
-            if result.masks is not None:
-                mask = result.masks.data[0].cpu().numpy()
-                mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
-                binary_mask = (mask * 255).astype(np.uint8)
-                boxes = result.boxes.xyxy.cpu().numpy()
-                if len(boxes) > 0:
-                    x1, y1, x2, y2 = map(int, boxes[0])
-                    cropped = binary_mask[y1:y2, x1:x2]
-                    resized = cv2.resize(cropped, GEI_SIZE)
-                    silhouettes.append(resized)
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
                 break
-    cap.release()
+            results = yolo(frame, classes=[0], verbose=False, device=_device)
+            for result in results:
+                if result.masks is not None:
+                    mask = result.masks.data[0].cpu().numpy()
+                    mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
+                    binary_mask = (mask * 255).astype(np.uint8)
+                    boxes = result.boxes.xyxy.cpu().numpy()
+                    if len(boxes) > 0:
+                        x1, y1, x2, y2 = map(int, boxes[0])
+                        cropped = binary_mask[y1:y2, x1:x2]
+                        if cropped.size == 0:
+                            break
+                        resized = cv2.resize(cropped, GEI_SIZE)
+                        silhouettes.append(resized)
+                    break
+    finally:
+        cap.release()
 
     if not silhouettes:
         raise ValueError("No person detected in video (YOLO).")
@@ -215,30 +245,48 @@ def find_best_gait_match(new_embedding: list, all_users) -> tuple:
     """
     Compare gait embedding against all stored users using scaled confidence.
     Returns: (best_user, scaled_score, raw_score)
+
+    Vectorized: stacks all stored embeddings into one matrix and computes
+    cosine similarity in a single matmul, instead of looping per user with
+    sklearn. Equivalent results, dramatically faster for large galleries.
     """
-    best_user      = None
-    best_raw       = -1.0
-    best_scaled    = 0.0
-
-    new_vec = np.array(new_embedding).reshape(1, -1)
-
+    # Collect users that actually have a stored embedding.
+    candidate_users = []
+    candidate_vecs = []
     for user in all_users:
         stored = user.get_gait_embedding()
         if stored is None:
             continue
-        stored_vec = np.array(stored).reshape(1, -1)
-        raw   = float(sk_cosine(new_vec, stored_vec)[0][0])
-        scaled = scale_gait_score(raw)
-        
-        if scaled > best_scaled:
-            best_raw    = raw
-            best_scaled = scaled
-            best_user   = user
-        elif scaled == best_scaled and raw > best_raw:
-            best_raw  = raw
-            best_user = user
+        candidate_users.append(user)
+        candidate_vecs.append(np.asarray(stored, dtype=np.float32))
+
+    if not candidate_users:
+        return None, 0.0, -1.0
+
+    new_vec = np.asarray(new_embedding, dtype=np.float32).ravel()
+    stored_mat = np.vstack(candidate_vecs)  # (N, D)
+
+    # Cosine similarity = (A · B) / (||A|| * ||B||), computed in one matmul.
+    new_norm = np.linalg.norm(new_vec)
+    stored_norms = np.linalg.norm(stored_mat, axis=1)
+    eps = 1e-12
+    raw_scores = (stored_mat @ new_vec) / (stored_norms * new_norm + eps)
+
+    # Apply the Min-Max scaler vectorially.
+    denom = (BASE_MAX - BASE_MIN)
+    scaled_scores = np.clip((raw_scores - BASE_MIN) / denom, 0.0, 1.0)
+    scaled_scores = np.where(raw_scores < BASE_MIN, 0.0, scaled_scores)
+
+    # Pick best by scaled score, breaking ties by raw score (matches the
+    # original loop's tie-break behaviour).
+    # lexsort sorts by last key as primary → put scaled last.
+    order = np.lexsort((raw_scores, scaled_scores))
+    best_idx = int(order[-1])
+    best_raw = float(raw_scores[best_idx])
+    best_scaled = float(scaled_scores[best_idx])
+    best_user = candidate_users[best_idx]
 
     if best_scaled >= GAIT_THRESHOLD:
         return best_user, best_scaled, best_raw
-    
+
     return None, best_scaled, best_raw
