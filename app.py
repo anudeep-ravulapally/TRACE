@@ -20,6 +20,12 @@ UPLOAD_DIR   = os.path.join(BASE_DIR, "uploads")
 os.makedirs(DATABASE_DIR, exist_ok=True)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# Longest allowed length (including leading dot) of an uploaded video's file
+# extension. Any uploaded filename whose extension doesn't fit this whitelist
+# is normalised to ``.mp4`` before being interpolated into our temp path —
+# this is the front line against path-injection via ``video.filename``.
+_MAX_EXT_LEN = 5
+
 app.config["SQLALCHEMY_DATABASE_URI"] = (
     "sqlite:///" + os.path.join(DATABASE_DIR, "trace.db")
 )
@@ -250,13 +256,15 @@ def register_gait():
     # Extract embedding for each clip; keep going on per-clip failures so a
     # single bad clip doesn't doom a multi-clip enrollment.
     new_embeddings = []
-    errors = []          # User-facing strings (sanitised; never raw exceptions).
+    failed_count = 0
     tmp_paths = []
     for i, video in enumerate(files):
         # Whitelist the suffix so a hostile ``video.filename`` cannot inject
         # path separators / traversal segments into ``tmp_path``.
+        # (``_MAX_EXT_LEN`` keeps things like ``.mp4``, ``.webm``, ``.mov``
+        # while rejecting anything implausible.)
         ext = os.path.splitext(video.filename or "")[1].lower()
-        if not (1 <= len(ext) <= 5) or not ext[1:].isalnum():
+        if not (1 <= len(ext) <= _MAX_EXT_LEN) or not ext[1:].isalnum():
             ext = ".mp4"
         # ``user_id`` is already an int and ``i`` is loop-controlled — both
         # safe to interpolate into a filename under our own UPLOAD_DIR.
@@ -265,15 +273,12 @@ def register_gait():
         tmp_paths.append(tmp_path)
         try:
             new_embeddings.append(get_gait_embedding_from_video(tmp_path))
-        except ValueError as e:
-            # ValueError is raised intentionally with a user-facing message
-            # by the gait pipeline — safe to surface.
-            errors.append(f"clip {i+1}: {e}")
         except Exception:
-            # Don't leak internal stack-trace details to the client; log
-            # server-side and show a generic message instead.
+            # Don't surface raw exception text to the client (it can leak
+            # internal paths or stack traces). Log the real cause server-side
+            # and count failures for an aggregated, sanitised message.
             app.logger.exception("gait embedding extraction failed (clip %d)", i + 1)
-            errors.append(f"clip {i+1}: extraction failed")
+            failed_count += 1
 
     for p in tmp_paths:
         if os.path.exists(p):
@@ -283,7 +288,7 @@ def register_gait():
                 pass
 
     if not new_embeddings:
-        return jsonify({"error": "; ".join(errors) or "No usable clips."}), 400
+        return jsonify({"error": "No usable clips."}), 400
 
     try:
         if append:
@@ -297,8 +302,8 @@ def register_gait():
         return jsonify({"error": "Failed to save embedding"}), 500
 
     msg = f"Gait registered for {user.full_name}! ({len(new_embeddings)} clip(s))"
-    if errors:
-        msg += " Some clips were skipped: " + "; ".join(errors)
+    if failed_count:
+        msg += f" {failed_count} clip(s) skipped due to extraction errors."
     return jsonify({"success": True, "message": msg, "clips": len(new_embeddings)})
 
 # ── API: Gait Identify ─────────────────────────────────────────────────

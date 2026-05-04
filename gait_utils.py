@@ -389,8 +389,11 @@ def find_best_gait_match(new_embedding: list, all_users) -> tuple:
     raw_clip_scores = (stored_mat @ new_vec) / (stored_norms * new_norm + eps)
 
     # Reduce: per-user → max similarity across that user's clips.
-    # (Tracking by integer index, not id(), so the result is stable even if
-    #  the ORM rebuilds user objects mid-call.)
+    # ``np.maximum.at`` does an unbuffered, index-scattered max-reduce:
+    #   raw_scores[clip_to_user_idx[k]] = max(raw_scores[..], raw_clip_scores[k])
+    # i.e. every clip's similarity bumps up its owner's running maximum.
+    # Tracking by integer index (not id()) keeps this stable even if the
+    # ORM rebuilds user objects mid-call.
     raw_scores = np.full(len(candidate_users), -np.inf, dtype=np.float32)
     np.maximum.at(raw_scores, clip_to_user_idx, raw_clip_scores)
 
