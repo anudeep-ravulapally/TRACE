@@ -366,15 +366,16 @@ def find_best_gait_match(new_embedding: list, all_users) -> tuple:
     """
     candidate_users = []
     candidate_vecs = []           # flat list of all clip vectors
-    candidate_owners = []         # parallel: which user each clip belongs to
+    clip_to_user_idx = []         # parallel: index into candidate_users
     for user in all_users:
         clips = _user_clip_embeddings(user)
         if not clips:
             continue
+        u_idx = len(candidate_users)
         candidate_users.append(user)
         for c in clips:
             candidate_vecs.append(np.asarray(c, dtype=np.float32))
-            candidate_owners.append(user)
+            clip_to_user_idx.append(u_idx)
 
     if not candidate_users:
         return None, 0.0, -1.0
@@ -388,14 +389,10 @@ def find_best_gait_match(new_embedding: list, all_users) -> tuple:
     raw_clip_scores = (stored_mat @ new_vec) / (stored_norms * new_norm + eps)
 
     # Reduce: per-user → max similarity across that user's clips.
-    user_to_score: dict = {}
-    for sim, owner in zip(raw_clip_scores, candidate_owners):
-        prev = user_to_score.get(id(owner))
-        if prev is None or sim > prev:
-            user_to_score[id(owner)] = sim
-    raw_scores = np.array(
-        [user_to_score[id(u)] for u in candidate_users], dtype=np.float32,
-    )
+    # (Tracking by integer index, not id(), so the result is stable even if
+    #  the ORM rebuilds user objects mid-call.)
+    raw_scores = np.full(len(candidate_users), -np.inf, dtype=np.float32)
+    np.maximum.at(raw_scores, clip_to_user_idx, raw_clip_scores)
 
     if _USE_RAW_COSINE:
         # Cosine ∈ [-1, 1]; clamp negative values to 0 for the scaled view.

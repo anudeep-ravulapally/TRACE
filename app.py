@@ -225,11 +225,15 @@ def register_gait():
         append  : "true"|... — if truthy, ADD these clips to whatever the
                                 user already has enrolled. Default replaces.
     """
-    user_id = request.form.get("user_id")
-    if not user_id:
+    raw_user_id = request.form.get("user_id")
+    if not raw_user_id:
         return jsonify({"error": "user_id is required"}), 400
+    try:
+        user_id = int(raw_user_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "user_id must be an integer"}), 400
 
-    user = User.query.get(int(user_id))
+    user = User.query.get(user_id)
     if not user:
         return jsonify({"error": "User not found"}), 404
 
@@ -246,19 +250,30 @@ def register_gait():
     # Extract embedding for each clip; keep going on per-clip failures so a
     # single bad clip doesn't doom a multi-clip enrollment.
     new_embeddings = []
-    errors = []
+    errors = []          # User-facing strings (sanitised; never raw exceptions).
     tmp_paths = []
     for i, video in enumerate(files):
-        suffix = os.path.splitext(video.filename)[1] or ".mp4"
-        tmp_path = os.path.join(UPLOAD_DIR, f"gait_reg_{user_id}_{i}{suffix}")
+        # Whitelist the suffix so a hostile ``video.filename`` cannot inject
+        # path separators / traversal segments into ``tmp_path``.
+        ext = os.path.splitext(video.filename or "")[1].lower()
+        if not (1 <= len(ext) <= 5) or not ext[1:].isalnum():
+            ext = ".mp4"
+        # ``user_id`` is already an int and ``i`` is loop-controlled — both
+        # safe to interpolate into a filename under our own UPLOAD_DIR.
+        tmp_path = os.path.join(UPLOAD_DIR, f"gait_reg_{user_id}_{i}{ext}")
         video.save(tmp_path)
         tmp_paths.append(tmp_path)
         try:
             new_embeddings.append(get_gait_embedding_from_video(tmp_path))
         except ValueError as e:
+            # ValueError is raised intentionally with a user-facing message
+            # by the gait pipeline — safe to surface.
             errors.append(f"clip {i+1}: {e}")
-        except Exception as e:
-            errors.append(f"clip {i+1}: {e}")
+        except Exception:
+            # Don't leak internal stack-trace details to the client; log
+            # server-side and show a generic message instead.
+            app.logger.exception("gait embedding extraction failed (clip %d)", i + 1)
+            errors.append(f"clip {i+1}: extraction failed")
 
     for p in tmp_paths:
         if os.path.exists(p):
@@ -277,8 +292,9 @@ def register_gait():
         else:
             user.set_gait_embeddings(new_embeddings)
         db.session.commit()
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        app.logger.exception("gait embedding commit failed for user %s", user_id)
+        return jsonify({"error": "Failed to save embedding"}), 500
 
     msg = f"Gait registered for {user.full_name}! ({len(new_embeddings)} clip(s))"
     if errors:

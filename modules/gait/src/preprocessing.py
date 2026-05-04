@@ -201,7 +201,8 @@ def estimate_gait_period(silhouettes: Sequence[np.ndarray]) -> Optional[int]:
     widths = np.zeros(n, dtype=np.float32)
     for i, s in enumerate(silhouettes):
         cols_with_fg = np.where(s.sum(axis=0) > 0)[0]
-        widths[i] = float(cols_with_fg[-1] - cols_with_fg[0]) if cols_with_fg.size else 0.0
+        # +1 so a single-column silhouette has width 1, not 0.
+        widths[i] = float(cols_with_fg[-1] - cols_with_fg[0] + 1) if cols_with_fg.size else 0.0
 
     sig = widths - widths.mean()
     if np.allclose(sig, 0):
