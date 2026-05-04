@@ -233,6 +233,100 @@ def verification_metrics(
     }
 
 
+def open_set_calibration(
+    probe_emb: np.ndarray,
+    probe_subjects: Sequence[str],
+    gallery_emb: np.ndarray,
+    gallery_subjects: Sequence[str],
+) -> Dict[str, float]:
+    """Empirical calibration of the open-set unknown-rejection knobs.
+
+    Treats every probe as an "unknown" trial against the gallery with its own
+    subject removed, and as a "genuine" trial otherwise. For each probe we
+    compute the per-user max-cosine reduction (one score per gallery subject)
+    and look at:
+
+      * **best_raw**  — the top user's raw cosine.
+      * **margin**    — ``top1 − top2`` of the per-user scores.
+
+    The recommended ``unknown_raw_floor`` and ``unknown_margin_min`` are the
+    largest values that still admit ≥ ``1 − far`` of *genuine* probes (i.e.
+    targeting a given False-Accept Rate against unknowns by definition pushes
+    these knobs up; we cap them where genuine accept-rate would start to
+    suffer).
+
+    Returns a dict suitable for printing — does not write any config files.
+    """
+    if probe_emb.size == 0 or gallery_emb.size == 0:
+        return {}
+
+    # Per-probe, per-gallery-subject cosine matrix.
+    sim = _cosine_similarity(probe_emb, gallery_emb)  # (P, G)
+    g_subj = np.asarray(gallery_subjects)
+    p_subj = np.asarray(probe_subjects)
+
+    genuine_best:    List[float] = []
+    genuine_margin:  List[float] = []
+    imposter_best:   List[float] = []
+    imposter_margin: List[float] = []
+
+    for i, subj in enumerate(p_subj):
+        row = sim[i]                         # (G,)
+        # ── Genuine trial: full gallery, expect own subject to win.
+        if subj in g_subj:
+            sorted_desc = np.sort(row)[::-1]
+            if sorted_desc.size >= 2:
+                genuine_best.append(float(sorted_desc[0]))
+                genuine_margin.append(float(sorted_desc[0] - sorted_desc[1]))
+
+        # ── Imposter / unknown trial: drop probe's own subject from gallery
+        #    and re-rank. This simulates "user not enrolled".
+        mask = (g_subj != subj)
+        if mask.sum() >= 2:
+            row_u = row[mask]
+            sorted_desc = np.sort(row_u)[::-1]
+            imposter_best.append(float(sorted_desc[0]))
+            imposter_margin.append(float(sorted_desc[0] - sorted_desc[1]))
+
+    out: Dict[str, float] = {}
+    if genuine_best:
+        gb = np.asarray(genuine_best);    gm = np.asarray(genuine_margin)
+        out["genuine_best_p05"]   = float(np.percentile(gb, 5))
+        out["genuine_best_p50"]   = float(np.percentile(gb, 50))
+        out["genuine_margin_p05"] = float(np.percentile(gm, 5))
+        out["genuine_margin_p50"] = float(np.percentile(gm, 50))
+    if imposter_best:
+        ib = np.asarray(imposter_best);   im = np.asarray(imposter_margin)
+        out["imposter_best_p99"]    = float(np.percentile(ib, 99))
+        out["imposter_best_p999"]   = float(np.percentile(ib, 99.9))
+        out["imposter_margin_p99"]  = float(np.percentile(im, 99))
+        out["imposter_margin_p999"] = float(np.percentile(im, 99.9))
+
+    # Recommendations target FAR ∈ {1e-2, 1e-3}: the knobs need to be at least
+    # the corresponding imposter percentile to reject that fraction of unknowns.
+    # We also cap each one at the 5th-percentile genuine value so we don't
+    # eat into legitimate accepts.
+    if genuine_best and imposter_best:
+        out["recommended_raw_floor_far_1e-2"] = float(min(
+            np.percentile(imposter_best, 99),
+            np.percentile(genuine_best, 5),
+        ))
+        out["recommended_raw_floor_far_1e-3"] = float(min(
+            np.percentile(imposter_best, 99.9),
+            np.percentile(genuine_best, 5),
+        ))
+    if genuine_margin and imposter_margin:
+        out["recommended_margin_min_far_1e-2"] = float(min(
+            np.percentile(imposter_margin, 99),
+            np.percentile(genuine_margin, 5),
+        ))
+        out["recommended_margin_min_far_1e-3"] = float(min(
+            np.percentile(imposter_margin, 99.9),
+            np.percentile(genuine_margin, 5),
+        ))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -331,6 +425,37 @@ def main(argv=None) -> int:
         print(f"  AUC                  : {v['auc']*100:>6.2f}%")
         print(f"  TAR @ FAR=1e-2       : {v['tar_at_far_1e-2']*100:>6.2f}%")
         print(f"  TAR @ FAR=1e-3       : {v['tar_at_far_1e-3']*100:>6.2f}%")
+
+        if args.per_angle:
+            cal = open_set_calibration(all_probe_emb, all_probe_subj,
+                                       g_emb_subj, g_subj_list)
+            if cal:
+                print()
+                print("Open-set unknown-rejection calibration "
+                      "(genuine vs imposter top-1 / top1-top2):")
+                print(f"  genuine  best   p05/p50 : "
+                      f"{cal.get('genuine_best_p05', float('nan')):.4f} / "
+                      f"{cal.get('genuine_best_p50', float('nan')):.4f}")
+                print(f"  imposter best   p99/p999: "
+                      f"{cal.get('imposter_best_p99', float('nan')):.4f} / "
+                      f"{cal.get('imposter_best_p999', float('nan')):.4f}")
+                print(f"  genuine  margin p05/p50 : "
+                      f"{cal.get('genuine_margin_p05', float('nan')):.4f} / "
+                      f"{cal.get('genuine_margin_p50', float('nan')):.4f}")
+                print(f"  imposter margin p99/p999: "
+                      f"{cal.get('imposter_margin_p99', float('nan')):.4f} / "
+                      f"{cal.get('imposter_margin_p999', float('nan')):.4f}")
+                print("  Recommended sidecar values (paste into config JSON):")
+                if "recommended_raw_floor_far_1e-2" in cal:
+                    print(f"    unknown_raw_floor   @ FAR=1e-2 : "
+                          f"{cal['recommended_raw_floor_far_1e-2']:.4f}")
+                    print(f"    unknown_raw_floor   @ FAR=1e-3 : "
+                          f"{cal['recommended_raw_floor_far_1e-3']:.4f}")
+                if "recommended_margin_min_far_1e-2" in cal:
+                    print(f"    unknown_margin_min  @ FAR=1e-2 : "
+                          f"{cal['recommended_margin_min_far_1e-2']:.4f}")
+                    print(f"    unknown_margin_min  @ FAR=1e-3 : "
+                          f"{cal['recommended_margin_min_far_1e-3']:.4f}")
 
     return 0
 

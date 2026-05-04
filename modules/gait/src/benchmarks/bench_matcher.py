@@ -83,7 +83,11 @@ def _load_new_matcher():
           "GAIT_THRESHOLD": GAIT_THRESHOLD,
           # The new matcher reads two module-level config flags. Inject the
           # values that match the legacy v1 model the benchmark targets.
-          "_USE_RAW_COSINE": False, "_L2_NORMALIZE": False}
+          "_USE_RAW_COSINE": False, "_L2_NORMALIZE": False,
+          # Open-set knobs introduced for unknown-person rejection. Set to 0
+          # here so the benchmark exercises the same accept/reject decisions
+          # as the OLD matcher (no extra rejection branches).
+          "UNKNOWN_RAW_FLOOR": 0.0, "UNKNOWN_MARGIN_MIN": 0.0}
     # Pull the matcher *and* its private clip-embedding helper. The helper is
     # defined just before find_best_gait_match in gait_utils.py.
     start_helper = src.index("def _user_clip_embeddings(")

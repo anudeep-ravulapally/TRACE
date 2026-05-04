@@ -49,6 +49,16 @@ LEGACY_V1 = {
     "minmax_base_min": 0.982,
     "minmax_base_max": 1.000,
     "match_threshold": 0.50,
+    # Open-set unknown-person rejection (see gait_utils.find_best_gait_match).
+    # v1's ResNet-18 + plain CE produces a heavily collapsed cosine band
+    # (~0.978..0.989), so an unknown probe's top-1 against a multi-user gallery
+    # can sneak past match_threshold. Two extra guardrails keep that out:
+    #   * unknown_raw_floor — min absolute raw cosine for any accept.
+    #   * unknown_margin_min — min gap between best-user and 2nd-best-user
+    #     raw cosine. Genuine probes have one clear winner; unknowns score
+    #     ~equally against everyone.
+    "unknown_raw_floor": 0.987,
+    "unknown_margin_min": 0.003,
     # Preprocessing knobs introduced in v2 — irrelevant for v1.
     "aspect_aware_align": False,
     "use_period_detection": False,
@@ -93,6 +103,16 @@ class GaitConfig:
     # Threshold operates on whatever score_scaling produces — should be set
     # from the verification ROC curve (see evaluate.py).
     match_threshold: float = 0.50
+
+    # ---- open-set unknown rejection --------------------------------------
+    # Minimum raw cosine for any accept. On v2 (wide cosine band) the absolute
+    # threshold is enough, so this defaults to 0.0 (off). On v1 (collapsed
+    # band) it's ~0.987 — see ``legacy_v1``.
+    unknown_raw_floor: float = 0.0
+    # Minimum gap between best-user and second-best-user raw cosine. Genuine
+    # probes have one clear winner; unknowns score ~equally against everyone.
+    # v2's wider band tolerates a looser default; v1 tightens this to ~0.003.
+    unknown_margin_min: float = 0.05
 
     # ---- bookkeeping ------------------------------------------------------
     notes: str = ""

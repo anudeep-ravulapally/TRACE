@@ -61,6 +61,11 @@ BASE_MAX = _CONFIG.minmax_base_max
 _USE_RAW_COSINE = (_CONFIG.score_scaling == "raw_cosine")
 _L2_NORMALIZE   = bool(_CONFIG.l2_normalize_embeddings)
 
+# Open-set unknown-person rejection knobs. See find_best_gait_match for how
+# these are applied. Both default to "off" if missing on older configs.
+UNKNOWN_RAW_FLOOR   = float(getattr(_CONFIG, "unknown_raw_floor", 0.0))
+UNKNOWN_MARGIN_MIN  = float(getattr(_CONFIG, "unknown_margin_min", 0.0))
+
 # ── Load model once at module import time ──────────────────────────────
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _transform = transforms.Compose([
@@ -351,7 +356,21 @@ def _user_clip_embeddings(user) -> list:
 def find_best_gait_match(new_embedding: list, all_users) -> tuple:
     """
     Compare a probe embedding against all stored users and return
-    ``(best_user, scaled_score, raw_score)``.
+    ``(best_user, scaled_score, raw_score, reason)``.
+
+    ``reason`` is ``None`` on a successful match. On an unknown-person
+    rejection it is one of:
+
+      * ``"below_threshold"`` — top user's scaled score did not clear
+        ``GAIT_THRESHOLD``.
+      * ``"below_raw_floor"`` — top user's raw cosine fell below
+        ``UNKNOWN_RAW_FLOOR`` (catches unknowns when the gallery has only one
+        enrolled user, where there is no useful second-best to subtract).
+      * ``"ambiguous_match"`` — gap between best and second-best user-level
+        raw cosine fell below ``UNKNOWN_MARGIN_MIN``. This is the classic
+        open-set fingerprint of an unknown probe: in v1's collapsed cosine
+        band, an out-of-gallery probe scores roughly equally against every
+        enrolled user, so ``top1 − top2`` is tiny.
 
     Behaviour:
       - **Multi-clip galleries**: each user contributes one or more enrollment
@@ -378,7 +397,7 @@ def find_best_gait_match(new_embedding: list, all_users) -> tuple:
             clip_to_user_idx.append(u_idx)
 
     if not candidate_users:
-        return None, 0.0, -1.0
+        return None, 0.0, -1.0, "below_threshold"
 
     new_vec = np.asarray(new_embedding, dtype=np.float32).ravel()
     stored_mat = np.vstack(candidate_vecs)  # (N_clips, D)
@@ -412,7 +431,29 @@ def find_best_gait_match(new_embedding: list, all_users) -> tuple:
     best_scaled = float(scaled_scores[best_idx])
     best_user = candidate_users[best_idx]
 
-    if best_scaled >= GAIT_THRESHOLD:
-        return best_user, best_scaled, best_raw
+    # ── Open-set unknown rejection ────────────────────────────────────
+    # 1) Existing absolute threshold.
+    if best_scaled < GAIT_THRESHOLD:
+        return None, best_scaled, best_raw, "below_threshold"
 
-    return None, best_scaled, best_raw
+    # 2) Raw-cosine floor — guards single-user galleries (where there is no
+    #    second-best to subtract) and any other configuration where the
+    #    operator wants a hard absolute minimum on top of the scaled score.
+    #    Disabled when UNKNOWN_RAW_FLOOR <= 0 (the v2 default).
+    if UNKNOWN_RAW_FLOOR > 0.0 and best_raw < UNKNOWN_RAW_FLOOR:
+        return None, best_scaled, best_raw, "below_raw_floor"
+
+    # 3) Top1 − Top2 margin at the *user* level (not clip level): the gap
+    #    between the best user's similarity and the next user's similarity.
+    #    Skipped if only one user is enrolled (no meaningful margin exists)
+    #    or if UNKNOWN_MARGIN_MIN <= 0.
+    if UNKNOWN_MARGIN_MIN > 0.0 and len(candidate_users) >= 2:
+        # ``order`` is ascending by (scaled, raw); the second-best user is the
+        # element just before ``best_idx`` in that ordering.
+        second_idx = int(order[-2])
+        second_raw = float(raw_scores[second_idx])
+        margin = best_raw - second_raw
+        if margin < UNKNOWN_MARGIN_MIN:
+            return None, best_scaled, best_raw, "ambiguous_match"
+
+    return best_user, best_scaled, best_raw, None

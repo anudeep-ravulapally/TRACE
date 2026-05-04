@@ -321,7 +321,7 @@ def identify_gait():
         from gait_utils import vanity_score
         embedding = get_gait_embedding_from_video(tmp_path)
         all_users = User.query.filter(User.gait_embedding.isnot(None)).all()
-        match, scaled, raw = find_best_gait_match(embedding, all_users)
+        match, scaled, raw, reason = find_best_gait_match(embedding, all_users)
         os.remove(tmp_path)
 
         display_pct = round(vanity_score(scaled) * 100, 2)
@@ -340,6 +340,7 @@ def identify_gait():
             return jsonify({
                 "identified": False,
                 "message":    "Gait not recognized",
+                "reason":     reason,
                 "confidence": round(scaled * 100, 2),
                 "raw_score":  round(raw * 100, 4)
             })
@@ -385,7 +386,7 @@ def identify_fusion():
         try:
             g_emb = get_gait_embedding_from_video(tmp_path)
             all_gait_users = User.query.filter(User.gait_embedding.isnot(None)).all()
-            gait_match, gait_score, gait_raw = find_best_gait_match(g_emb, all_gait_users)
+            gait_match, gait_score, gait_raw, _ = find_best_gait_match(g_emb, all_gait_users)
         except Exception:
             gait_score = 0.0
             gait_raw   = 0.0
