@@ -20,6 +20,12 @@ UPLOAD_DIR   = os.path.join(BASE_DIR, "uploads")
 os.makedirs(DATABASE_DIR, exist_ok=True)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# Longest allowed length (including leading dot) of an uploaded video's file
+# extension. Any uploaded filename whose extension doesn't fit this whitelist
+# is normalised to ``.mp4`` before being interpolated into our temp path —
+# this is the front line against path-injection via ``video.filename``.
+_MAX_EXT_LEN = 5
+
 app.config["SQLALCHEMY_DATABASE_URI"] = (
     "sqlite:///" + os.path.join(DATABASE_DIR, "trace.db")
 )
@@ -214,39 +220,91 @@ def identify():
 @app.route("/api/register-gait", methods=["POST"])
 def register_gait():
     """
-    Accepts a video file upload.
-    Extracts GEI → embedding → stores in user record.
+    Accepts one or more video file uploads.
+    Extracts GEI → embedding for each → stores in user record.
+
+    Form fields:
+        user_id : int        — required
+        video   : file       — single-clip enrollment (form field "video")
+        videos  : file[]     — multi-clip enrollment (form field "videos",
+                                repeat the field name once per clip)
+        append  : "true"|... — if truthy, ADD these clips to whatever the
+                                user already has enrolled. Default replaces.
     """
-    user_id = request.form.get("user_id")
-    video   = request.files.get("video")
-
-    if not user_id:
+    raw_user_id = request.form.get("user_id")
+    if not raw_user_id:
         return jsonify({"error": "user_id is required"}), 400
-    if not video:
-        return jsonify({"error": "Video file is required"}), 400
+    try:
+        user_id = int(raw_user_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "user_id must be an integer"}), 400
 
-    user = User.query.get(int(user_id))
+    user = User.query.get(user_id)
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    # Save temp video
-    suffix = os.path.splitext(video.filename)[1] or ".mp4"
-    tmp_path = os.path.join(UPLOAD_DIR, f"gait_reg_{user_id}{suffix}")
-    video.save(tmp_path)
+    # Collect clip files: support both "video" (single) and "videos" (multi).
+    files = request.files.getlist("videos")
+    single = request.files.get("video")
+    if single:
+        files = list(files) + [single]
+    if not files:
+        return jsonify({"error": "At least one video file is required"}), 400
+
+    append = str(request.form.get("append", "")).lower() in ("1", "true", "yes")
+
+    # Extract embedding for each clip; keep going on per-clip failures so a
+    # single bad clip doesn't doom a multi-clip enrollment.
+    new_embeddings = []
+    failed_count = 0
+    tmp_paths = []
+    for i, video in enumerate(files):
+        # Whitelist the suffix so a hostile ``video.filename`` cannot inject
+        # path separators / traversal segments into ``tmp_path``.
+        # (``_MAX_EXT_LEN`` keeps things like ``.mp4``, ``.webm``, ``.mov``
+        # while rejecting anything implausible.)
+        ext = os.path.splitext(video.filename or "")[1].lower()
+        if not (1 <= len(ext) <= _MAX_EXT_LEN) or not ext[1:].isalnum():
+            ext = ".mp4"
+        # ``user_id`` is already an int and ``i`` is loop-controlled — both
+        # safe to interpolate into a filename under our own UPLOAD_DIR.
+        tmp_path = os.path.join(UPLOAD_DIR, f"gait_reg_{user_id}_{i}{ext}")
+        video.save(tmp_path)
+        tmp_paths.append(tmp_path)
+        try:
+            new_embeddings.append(get_gait_embedding_from_video(tmp_path))
+        except Exception:
+            # Don't surface raw exception text to the client (it can leak
+            # internal paths or stack traces). Log the real cause server-side
+            # and count failures for an aggregated, sanitised message.
+            app.logger.exception("gait embedding extraction failed (clip %d)", i + 1)
+            failed_count += 1
+
+    for p in tmp_paths:
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+    if not new_embeddings:
+        return jsonify({"error": "No usable clips."}), 400
 
     try:
-        embedding = get_gait_embedding_from_video(tmp_path)
-        user.set_gait_embedding(embedding)
+        if append:
+            for emb in new_embeddings:
+                user.add_gait_embedding(emb)
+        else:
+            user.set_gait_embeddings(new_embeddings)
         db.session.commit()
-        os.remove(tmp_path)
-        return jsonify({
-            "success": True,
-            "message": f"Gait registered for {user.full_name}!"
-        })
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        app.logger.exception("gait embedding commit failed for user %s", user_id)
+        return jsonify({"error": "Failed to save embedding"}), 500
+
+    msg = f"Gait registered for {user.full_name}! ({len(new_embeddings)} clip(s))"
+    if failed_count:
+        msg += f" {failed_count} clip(s) skipped due to extraction errors."
+    return jsonify({"success": True, "message": msg, "clips": len(new_embeddings)})
 
 # ── API: Gait Identify ─────────────────────────────────────────────────
 @app.route("/api/identify-gait", methods=["POST"])
@@ -263,7 +321,7 @@ def identify_gait():
         from gait_utils import vanity_score
         embedding = get_gait_embedding_from_video(tmp_path)
         all_users = User.query.filter(User.gait_embedding.isnot(None)).all()
-        match, scaled, raw = find_best_gait_match(embedding, all_users)
+        match, scaled, raw, reason = find_best_gait_match(embedding, all_users)
         os.remove(tmp_path)
 
         display_pct = round(vanity_score(scaled) * 100, 2)
@@ -282,6 +340,7 @@ def identify_gait():
             return jsonify({
                 "identified": False,
                 "message":    "Gait not recognized",
+                "reason":     reason,
                 "confidence": round(scaled * 100, 2),
                 "raw_score":  round(raw * 100, 4)
             })
@@ -327,7 +386,7 @@ def identify_fusion():
         try:
             g_emb = get_gait_embedding_from_video(tmp_path)
             all_gait_users = User.query.filter(User.gait_embedding.isnot(None)).all()
-            gait_match, gait_score, gait_raw = find_best_gait_match(g_emb, all_gait_users)
+            gait_match, gait_score, gait_raw, _ = find_best_gait_match(g_emb, all_gait_users)
         except Exception:
             gait_score = 0.0
             gait_raw   = 0.0

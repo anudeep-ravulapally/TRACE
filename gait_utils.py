@@ -6,44 +6,78 @@ Wraps the gait pipeline:
   video (.mp4) → YOLO silhouettes → GEI image → ResNet-18 embedding → cosine match
 
 Designed to be imported into app.py exactly like face_utils.py.
+
+Versioning
+==========
+This module is **config-driven** via a sidecar JSON next to the model file
+(see :mod:`modules.gait.src.preproc_config`). Two pipelines are supported:
+
+* **v1 (legacy)** — the original ``baseline_gait_model.pth`` trained with
+  plain cross-entropy, square 64×64 GEIs, and the Min-Max "Confidence
+  Punisher" scaling at inference. Activated when no sidecar config is found.
+
+* **v2 (production)** — aspect-aware 64×44 GEIs, L2-normalized embeddings,
+  raw cosine similarity matching with a calibrated threshold. Activated when
+  the model ships a sidecar config (``model.config.json``) declaring
+  ``score_scaling = "raw_cosine"``.
+
+Test-time / inference improvements that are active in *both* paths:
+  - flip TTA (inference embedding = mean of original + horizontal flip)
+  - multi-clip enrollment: a user can store several clip embeddings; matching
+    uses the **maximum** similarity across the clips (top-1 fusion)
+  - vectorised gallery matching
 """
 
 import os
-import sys
 import cv2
 import numpy as np
 import torch
 from pathlib import Path
 from PIL import Image
 
-# ── Add gait module to path ────────────────────────────────────────────
-GAIT_SRC = os.path.join(os.path.dirname(__file__), "modules", "gait", "src")
+# ── Paths ──────────────────────────────────────────────────────────────
 GAIT_MODEL_PATH = os.path.join(os.path.dirname(__file__), "modules", "gait", "models",
                                 "baseline_gait_model.pth")
-sys.path.insert(0, GAIT_SRC)
+
 from modules.gait.src.phase3_dataset_and_model import BaselineGaitCNN
+from modules.gait.src.preproc_config import load_gait_config
+from modules.gait.src import preprocessing as _pre
 
 from torchvision import transforms
-from sklearn.metrics.pairwise import cosine_similarity as sk_cosine
 
-# ── Constants ──────────────────────────────────────────────────────────
-GAIT_THRESHOLD   = 0.50   # Checked against SCALED confidence, not raw score
-GAIT_NUM_CLASSES = 74
-GEI_SIZE         = (64, 64)
+# ── Config (sidecar JSON + legacy v1 fallback) ─────────────────────────
+_CONFIG = load_gait_config(GAIT_MODEL_PATH)
 
-# Min-Max scaler bounds (calibrated from live debug scores)
-BASE_MIN = 0.982   # Raw scores below this → crushed to 0.0
-BASE_MAX = 1.000   # Theoretical upper bound
+# Public constants — kept on the module for backward compat. They reflect
+# whichever pipeline (v1 / v2) the loaded model corresponds to.
+GAIT_THRESHOLD   = _CONFIG.match_threshold
+GAIT_NUM_CLASSES = _CONFIG.num_classes
+GEI_SIZE         = tuple(_CONFIG.gei_size)            # (H, W)
+
+# Min-Max scaler bounds — only used on the v1 legacy path.
+BASE_MIN = _CONFIG.minmax_base_min
+BASE_MAX = _CONFIG.minmax_base_max
+
+_USE_RAW_COSINE = (_CONFIG.score_scaling == "raw_cosine")
+_L2_NORMALIZE   = bool(_CONFIG.l2_normalize_embeddings)
+
+# Open-set unknown-person rejection knobs. See find_best_gait_match for how
+# these are applied. Both default to "off" if missing on older configs.
+UNKNOWN_RAW_FLOOR   = float(getattr(_CONFIG, "unknown_raw_floor", 0.0))
+UNKNOWN_MARGIN_MIN  = float(getattr(_CONFIG, "unknown_margin_min", 0.0))
 
 # ── Load model once at module import time ──────────────────────────────
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _transform = transforms.Compose([
     transforms.Resize(GEI_SIZE),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5], std=[0.5])
+    transforms.Normalize(mean=list(_CONFIG.normalize_mean),
+                         std=list(_CONFIG.normalize_std)),
 ])
 
 _gait_model = None
+_yolo_model = None
+
 
 def _get_model():
     global _gait_model
@@ -59,6 +93,28 @@ def _get_model():
     return _gait_model
 
 
+def _get_yolo():
+    """Lazy-load the YOLOv8-seg model exactly once per process.
+
+    Returns the model instance, or None if ultralytics/YOLO weights are not
+    available (caller should fall back to the MOG2 path).
+    """
+    global _yolo_model
+    if _yolo_model is not None:
+        return _yolo_model
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        return None
+    try:
+        _yolo_model = YOLO("yolov8n-seg.pt")
+    except Exception:
+        # Model file missing or load failure — leave cache as None so we don't
+        # retry-load every call, but only for this process lifetime.
+        return None
+    return _yolo_model
+
+
 # ── Public API ─────────────────────────────────────────────────────────
 
 def video_to_gei(video_path: str) -> np.ndarray:
@@ -66,62 +122,99 @@ def video_to_gei(video_path: str) -> np.ndarray:
     Convert an .mp4 video to a Gait Energy Image (GEI).
 
     Uses YOLOv8-seg for person segmentation + silhouette averaging.
-    Falls back to frame-differencing background subtraction if YOLO unavailable.
+    Falls back to MOG2 background subtraction if YOLO is unavailable or
+    fails to detect any person in the video.
 
     Returns:
-        numpy uint8 array of shape (64, 64) — the GEI
+        numpy uint8 array of shape ``GEI_SIZE`` (H, W) — the GEI
     Raises:
         ValueError if no person detected or video unreadable
     """
-    try:
-        from ultralytics import YOLO
-        _yolo_video_to_gei(video_path)      # writes to tmp, returns path
-    except ImportError:
-        pass
+    yolo = _get_yolo()
+    if yolo is not None:
+        try:
+            return _yolo_video_to_gei(video_path, yolo)
+        except ValueError:
+            # No person detected via YOLO — try fallback before giving up.
+            pass
 
     return _fallback_video_to_gei(video_path)
 
 
-def _yolo_video_to_gei(video_path: str) -> np.ndarray:
-    """YOLO-based GEI extraction (preferred)."""
-    from ultralytics import YOLO
-    yolo = YOLO("yolov8n-seg.pt")
+def _yolo_video_to_gei(video_path: str, yolo=None) -> np.ndarray:
+    """YOLO-based GEI extraction (preferred).
+
+    On the v2 pipeline: picks the largest/most-confident person mask, applies
+    silhouette QC, aspect-aware centroid alignment, and period-aware GEI
+    averaging.
+
+    On v1: falls back to the original square-resize behaviour so the existing
+    checkpoint's expected input geometry is preserved.
+    """
+    if yolo is None:
+        yolo = _get_yolo()
+        if yolo is None:
+            raise ValueError("YOLO model unavailable.")
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
 
     silhouettes = []
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        results = yolo(frame, classes=[0], verbose=False, device=_device)
-        for result in results:
-            if result.masks is not None:
-                mask = result.masks.data[0].cpu().numpy()
-                mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
-                binary_mask = (mask * 255).astype(np.uint8)
-                boxes = result.boxes.xyxy.cpu().numpy()
-                if len(boxes) > 0:
-                    x1, y1, x2, y2 = map(int, boxes[0])
-                    cropped = binary_mask[y1:y2, x1:x2]
-                    resized = cv2.resize(cropped, GEI_SIZE)
-                    silhouettes.append(resized)
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
                 break
-    cap.release()
+            results = yolo(frame, classes=[0], verbose=False, device=_device)
+            for result in results:
+                if _CONFIG.aspect_aware_align:
+                    # v2 path: best-mask → QC → aspect-aware align.
+                    full_mask = _pre.silhouette_from_yolo_result(result, frame.shape[:2])
+                    if full_mask is None:
+                        break
+                    aligned = _pre.aligned_silhouette_from_mask(
+                        full_mask, out_size=GEI_SIZE,
+                    )
+                    if aligned is not None:
+                        silhouettes.append(aligned)
+                else:
+                    # v1 path: byte-for-byte the original behaviour.
+                    if result.masks is not None:
+                        mask = result.masks.data[0].cpu().numpy()
+                        mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
+                        binary_mask = (mask * 255).astype(np.uint8)
+                        boxes = result.boxes.xyxy.cpu().numpy()
+                        if len(boxes) > 0:
+                            x1, y1, x2, y2 = map(int, boxes[0])
+                            cropped = binary_mask[y1:y2, x1:x2]
+                            if cropped.size == 0:
+                                break
+                            resized = cv2.resize(cropped, (GEI_SIZE[1], GEI_SIZE[0]))
+                            silhouettes.append(resized)
+                break
+    finally:
+        cap.release()
 
-    if not silhouettes:
+    if len(silhouettes) < _CONFIG.min_silhouette_frames:
         raise ValueError("No person detected in video (YOLO).")
 
-    gei = np.mean(np.array(silhouettes), axis=0).astype(np.uint8)
-    return gei
+    if _CONFIG.aspect_aware_align:
+        gei = _pre.build_gei(silhouettes, use_period_detection=_CONFIG.use_period_detection)
+        if gei is None:
+            raise ValueError("Failed to build GEI.")
+        return gei
+    return np.mean(np.array(silhouettes), axis=0).astype(np.uint8)
 
 
 def _fallback_video_to_gei(video_path: str) -> np.ndarray:
     """
     Fallback: MOG2 background subtraction → silhouette averaging → GEI.
     Works without YOLO/GPU.
+
+    Note: MOG2 silhouettes are visually different from YOLO/CASIA-B silhouettes,
+    so embeddings from this path are less reliable — kept as a "better than
+    nothing" path when YOLO isn't available.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -151,25 +244,42 @@ def _fallback_video_to_gei(video_path: str) -> np.ndarray:
             if cv2.contourArea(largest) > 500:
                 x, y, w, h = cv2.boundingRect(largest)
                 roi = fg_mask[y:y+h, x:x+w]
-                resized = cv2.resize(roi, GEI_SIZE)
-                silhouettes.append(resized)
+                if _CONFIG.aspect_aware_align:
+                    if _pre.silhouette_is_acceptable(roi):
+                        aligned = _pre.align_silhouette(roi, out_size=GEI_SIZE)
+                        if aligned is not None:
+                            silhouettes.append(aligned)
+                else:
+                    resized = cv2.resize(roi, (GEI_SIZE[1], GEI_SIZE[0]))
+                    silhouettes.append(resized)
 
     cap.release()
 
-    if len(silhouettes) < 5:
+    if len(silhouettes) < max(5, _CONFIG.min_silhouette_frames):
         raise ValueError("Not enough movement detected in video. "
                          "Please record a 3-5 second walking clip.")
 
-    gei = np.mean(np.array(silhouettes), axis=0).astype(np.uint8)
-    return gei
+    if _CONFIG.aspect_aware_align:
+        gei = _pre.build_gei(silhouettes, use_period_detection=_CONFIG.use_period_detection)
+        if gei is None:
+            raise ValueError("Failed to build GEI.")
+        return gei
+    return np.mean(np.array(silhouettes), axis=0).astype(np.uint8)
 
 
-def gei_to_embedding(gei: np.ndarray) -> list:
+def gei_to_embedding(gei: np.ndarray, flip_tta: bool = True) -> list:
     """
-    Convert a GEI numpy array (64×64 uint8) to a 512-d embedding vector.
+    Convert a GEI numpy array to a 512-d embedding vector.
+
+    Args:
+        gei: HxW uint8 GEI image.
+        flip_tta: If True (default) average the embedding of the GEI and its
+            horizontal flip — a free ~0.5–1pp accuracy bump for symmetric gait
+            patterns. Disable to recover the legacy single-pass behaviour.
 
     Returns:
-        list of 512 floats
+        list of 512 floats. L2-normalized when the loaded model's config says
+        embeddings should be normalized; raw otherwise.
     """
     model = _get_model()
     pil_img = Image.fromarray(gei).convert("L")
@@ -177,6 +287,13 @@ def gei_to_embedding(gei: np.ndarray) -> list:
 
     with torch.no_grad():
         _, emb = model(tensor, return_embedding=True)
+        if flip_tta:
+            tensor_f = torch.flip(tensor, dims=[-1])
+            _, emb_f = model(tensor_f, return_embedding=True)
+            emb = (emb + emb_f) * 0.5
+
+        if _L2_NORMALIZE:
+            emb = torch.nn.functional.normalize(emb, p=2, dim=1)
 
     return emb.cpu().numpy().flatten().tolist()
 
@@ -192,8 +309,13 @@ def get_gait_embedding_from_video(video_path: str) -> list:
 
 def scale_gait_score(raw_score: float) -> float:
     """
-    Min-Max Normalization "Confidence Punisher".
+    Min-Max Normalization "Confidence Punisher" — legacy v1 only.
+
+    On v2 (raw-cosine) models this is the identity (clamped to [0, 1]) so the
+    function remains safe to call from any callsite.
     """
+    if _USE_RAW_COSINE:
+        return float(min(max(raw_score, 0.0), 1.0))
     if raw_score < BASE_MIN:
         return 0.0
     scaled = (raw_score - BASE_MIN) / (BASE_MAX - BASE_MIN)
@@ -201,44 +323,137 @@ def scale_gait_score(raw_score: float) -> float:
 
 def vanity_score(scaled: float) -> float:
     """
-    Frontend vanity curve. Maps [0.50 → 1.0] to [0.85 → 0.99]
+    Frontend vanity curve. Maps [threshold → 1.0] to [0.85 → 0.99].
+
+    On v2 raw-cosine models the scaled score already lives on [0, 1] in a
+    well-distributed way, so the same vanity remap still produces sensible
+    UI confidence values.
     """
     if scaled < GAIT_THRESHOLD:
         return scaled          # failed — don't dress up the score
-    
+
     DISPLAY_LOW  = 0.85
     DISPLAY_HIGH = 0.99
     t = (scaled - GAIT_THRESHOLD) / (1.0 - GAIT_THRESHOLD)
     return DISPLAY_LOW + t * (DISPLAY_HIGH - DISPLAY_LOW)
 
+
+# ── Matching ───────────────────────────────────────────────────────────
+def _user_clip_embeddings(user) -> list:
+    """Return a (possibly empty) list of stored clip embeddings for a user.
+
+    Uses ``get_gait_embeddings`` (plural, multi-clip) if the User model
+    exposes it, otherwise falls back to the single-clip ``get_gait_embedding``.
+    """
+    fn = getattr(user, "get_gait_embeddings", None)
+    if callable(fn):
+        clips = fn() or []
+        return [c for c in clips if c]
+    single = user.get_gait_embedding()
+    return [single] if single else []
+
+
 def find_best_gait_match(new_embedding: list, all_users) -> tuple:
     """
-    Compare gait embedding against all stored users using scaled confidence.
-    Returns: (best_user, scaled_score, raw_score)
+    Compare a probe embedding against all stored users and return
+    ``(best_user, scaled_score, raw_score, reason)``.
+
+    ``reason`` is ``None`` on a successful match. On an unknown-person
+    rejection it is one of:
+
+      * ``"below_threshold"`` — top user's scaled score did not clear
+        ``GAIT_THRESHOLD``.
+      * ``"below_raw_floor"`` — top user's raw cosine fell below
+        ``UNKNOWN_RAW_FLOOR`` (catches unknowns when the gallery has only one
+        enrolled user, where there is no useful second-best to subtract).
+      * ``"ambiguous_match"`` — gap between best and second-best user-level
+        raw cosine fell below ``UNKNOWN_MARGIN_MIN``. This is the classic
+        open-set fingerprint of an unknown probe: in v1's collapsed cosine
+        band, an out-of-gallery probe scores roughly equally against every
+        enrolled user, so ``top1 − top2`` is tiny.
+
+    Behaviour:
+      - **Multi-clip galleries**: each user contributes one or more enrollment
+        clip embeddings. The user's similarity is the **maximum** cosine
+        across their clips (top-1 score fusion).
+      - **v2 (raw-cosine) models**: the threshold operates directly on cosine.
+      - **v1 (legacy) models**: the Min-Max "Confidence Punisher" is applied
+        to preserve previously-calibrated thresholds.
+
+    Vectorised: stacks every clip from every user into one matrix, computes
+    similarity in a single matmul, then reduces per-user with a max.
     """
-    best_user      = None
-    best_raw       = -1.0
-    best_scaled    = 0.0
-
-    new_vec = np.array(new_embedding).reshape(1, -1)
-
+    candidate_users = []
+    candidate_vecs = []           # flat list of all clip vectors
+    clip_to_user_idx = []         # parallel: index into candidate_users
     for user in all_users:
-        stored = user.get_gait_embedding()
-        if stored is None:
+        clips = _user_clip_embeddings(user)
+        if not clips:
             continue
-        stored_vec = np.array(stored).reshape(1, -1)
-        raw   = float(sk_cosine(new_vec, stored_vec)[0][0])
-        scaled = scale_gait_score(raw)
-        
-        if scaled > best_scaled:
-            best_raw    = raw
-            best_scaled = scaled
-            best_user   = user
-        elif scaled == best_scaled and raw > best_raw:
-            best_raw  = raw
-            best_user = user
+        u_idx = len(candidate_users)
+        candidate_users.append(user)
+        for c in clips:
+            candidate_vecs.append(np.asarray(c, dtype=np.float32))
+            clip_to_user_idx.append(u_idx)
 
-    if best_scaled >= GAIT_THRESHOLD:
-        return best_user, best_scaled, best_raw
-    
-    return None, best_scaled, best_raw
+    if not candidate_users:
+        return None, 0.0, -1.0, "below_threshold"
+
+    new_vec = np.asarray(new_embedding, dtype=np.float32).ravel()
+    stored_mat = np.vstack(candidate_vecs)  # (N_clips, D)
+
+    new_norm = np.linalg.norm(new_vec)
+    stored_norms = np.linalg.norm(stored_mat, axis=1)
+    eps = 1e-12
+    raw_clip_scores = (stored_mat @ new_vec) / (stored_norms * new_norm + eps)
+
+    # Reduce: per-user → max similarity across that user's clips.
+    # ``np.maximum.at`` does an unbuffered, index-scattered max-reduce:
+    #   raw_scores[clip_to_user_idx[k]] = max(raw_scores[..], raw_clip_scores[k])
+    # i.e. every clip's similarity bumps up its owner's running maximum.
+    # Tracking by integer index (not id()) keeps this stable even if the
+    # ORM rebuilds user objects mid-call.
+    raw_scores = np.full(len(candidate_users), -np.inf, dtype=np.float32)
+    np.maximum.at(raw_scores, clip_to_user_idx, raw_clip_scores)
+
+    if _USE_RAW_COSINE:
+        # Cosine ∈ [-1, 1]; clamp negative values to 0 for the scaled view.
+        scaled_scores = np.clip(raw_scores, 0.0, 1.0)
+    else:
+        denom = (BASE_MAX - BASE_MIN)
+        scaled_scores = np.clip((raw_scores - BASE_MIN) / denom, 0.0, 1.0)
+        scaled_scores = np.where(raw_scores < BASE_MIN, 0.0, scaled_scores)
+
+    # Pick best by scaled score, breaking ties by raw score.
+    order = np.lexsort((raw_scores, scaled_scores))
+    best_idx = int(order[-1])
+    best_raw = float(raw_scores[best_idx])
+    best_scaled = float(scaled_scores[best_idx])
+    best_user = candidate_users[best_idx]
+
+    # ── Open-set unknown rejection ────────────────────────────────────
+    # 1) Existing absolute threshold.
+    if best_scaled < GAIT_THRESHOLD:
+        return None, best_scaled, best_raw, "below_threshold"
+
+    # 2) Raw-cosine floor — guards single-user galleries (where there is no
+    #    second-best to subtract) and any other configuration where the
+    #    operator wants a hard absolute minimum on top of the scaled score.
+    #    Disabled when UNKNOWN_RAW_FLOOR <= 0 (the v2 default).
+    if UNKNOWN_RAW_FLOOR > 0.0 and best_raw < UNKNOWN_RAW_FLOOR:
+        return None, best_scaled, best_raw, "below_raw_floor"
+
+    # 3) Top1 − Top2 margin at the *user* level (not clip level): the gap
+    #    between the best user's similarity and the next user's similarity.
+    #    Skipped if only one user is enrolled (no meaningful margin exists)
+    #    or if UNKNOWN_MARGIN_MIN <= 0.
+    if UNKNOWN_MARGIN_MIN > 0.0 and len(candidate_users) >= 2:
+        # ``order`` is ascending by (scaled, raw); the second-best user is the
+        # element just before ``best_idx`` in that ordering.
+        second_idx = int(order[-2])
+        second_raw = float(raw_scores[second_idx])
+        margin = best_raw - second_raw
+        if margin < UNKNOWN_MARGIN_MIN:
+            return None, best_scaled, best_raw, "ambiguous_match"
+
+    return best_user, best_scaled, best_raw, None
