@@ -80,9 +80,14 @@ def _load_new_matcher():
     with open(src_path) as f:
         src = f.read()
     ns = {"np": np, "BASE_MIN": BASE_MIN, "BASE_MAX": BASE_MAX,
-          "GAIT_THRESHOLD": GAIT_THRESHOLD}
-    start = src.index("def find_best_gait_match(")
-    fn_src = src[start:]
+          "GAIT_THRESHOLD": GAIT_THRESHOLD,
+          # The new matcher reads two module-level config flags. Inject the
+          # values that match the legacy v1 model the benchmark targets.
+          "_USE_RAW_COSINE": False, "_L2_NORMALIZE": False}
+    # Pull the matcher *and* its private clip-embedding helper. The helper is
+    # defined just before find_best_gait_match in gait_utils.py.
+    start_helper = src.index("def _user_clip_embeddings(")
+    fn_src = src[start_helper:]
     exec(fn_src, ns)
     return ns["find_best_gait_match"]
 

@@ -214,39 +214,76 @@ def identify():
 @app.route("/api/register-gait", methods=["POST"])
 def register_gait():
     """
-    Accepts a video file upload.
-    Extracts GEI → embedding → stores in user record.
+    Accepts one or more video file uploads.
+    Extracts GEI → embedding for each → stores in user record.
+
+    Form fields:
+        user_id : int        — required
+        video   : file       — single-clip enrollment (form field "video")
+        videos  : file[]     — multi-clip enrollment (form field "videos",
+                                repeat the field name once per clip)
+        append  : "true"|... — if truthy, ADD these clips to whatever the
+                                user already has enrolled. Default replaces.
     """
     user_id = request.form.get("user_id")
-    video   = request.files.get("video")
-
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
-    if not video:
-        return jsonify({"error": "Video file is required"}), 400
 
     user = User.query.get(int(user_id))
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    # Save temp video
-    suffix = os.path.splitext(video.filename)[1] or ".mp4"
-    tmp_path = os.path.join(UPLOAD_DIR, f"gait_reg_{user_id}{suffix}")
-    video.save(tmp_path)
+    # Collect clip files: support both "video" (single) and "videos" (multi).
+    files = request.files.getlist("videos")
+    single = request.files.get("video")
+    if single:
+        files = list(files) + [single]
+    if not files:
+        return jsonify({"error": "At least one video file is required"}), 400
+
+    append = str(request.form.get("append", "")).lower() in ("1", "true", "yes")
+
+    # Extract embedding for each clip; keep going on per-clip failures so a
+    # single bad clip doesn't doom a multi-clip enrollment.
+    new_embeddings = []
+    errors = []
+    tmp_paths = []
+    for i, video in enumerate(files):
+        suffix = os.path.splitext(video.filename)[1] or ".mp4"
+        tmp_path = os.path.join(UPLOAD_DIR, f"gait_reg_{user_id}_{i}{suffix}")
+        video.save(tmp_path)
+        tmp_paths.append(tmp_path)
+        try:
+            new_embeddings.append(get_gait_embedding_from_video(tmp_path))
+        except ValueError as e:
+            errors.append(f"clip {i+1}: {e}")
+        except Exception as e:
+            errors.append(f"clip {i+1}: {e}")
+
+    for p in tmp_paths:
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+    if not new_embeddings:
+        return jsonify({"error": "; ".join(errors) or "No usable clips."}), 400
 
     try:
-        embedding = get_gait_embedding_from_video(tmp_path)
-        user.set_gait_embedding(embedding)
+        if append:
+            for emb in new_embeddings:
+                user.add_gait_embedding(emb)
+        else:
+            user.set_gait_embeddings(new_embeddings)
         db.session.commit()
-        os.remove(tmp_path)
-        return jsonify({
-            "success": True,
-            "message": f"Gait registered for {user.full_name}!"
-        })
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+    msg = f"Gait registered for {user.full_name}! ({len(new_embeddings)} clip(s))"
+    if errors:
+        msg += " Some clips were skipped: " + "; ".join(errors)
+    return jsonify({"success": True, "message": msg, "clips": len(new_embeddings)})
 
 # ── API: Gait Identify ─────────────────────────────────────────────────
 @app.route("/api/identify-gait", methods=["POST"])

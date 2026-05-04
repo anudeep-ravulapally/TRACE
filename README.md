@@ -11,6 +11,7 @@ TRACE is a B.Tech Capstone research project demonstrating automated, contactless
 
 - [System Architecture](#system-architecture)
 - [Open-Set Confidence Punisher](#open-set-confidence-punisher)
+- [Improving Accuracy: Roadmap & Tools](#improving-accuracy-roadmap--tools)
 - [Standard Operating Procedures](#standard-operating-procedures)
 - [Prerequisites](#prerequisites)
 - [Setup & Installation](#setup--installation)
@@ -60,6 +61,64 @@ TRACE solves this with a strict **Min-Max Normalization scaler**:
 3. **Security Threshold** — The open-set gate checks scaled confidence ≥ `0.50`. The backend never relaxes this.
 4. **Vanity Curve** — Passing scores `[0.50 → 1.0]` are re-mapped to `[85% → 99%]` for the UI only, so a borderline match displays as 85% rather than 50%.
 
+> **Note:** the Confidence Punisher is a *symptom* of training the model with cross-entropy on a closed 74-class set and then matching unseen identities by cosine — softmax doesn't optimize for cosine separability, so unrelated embeddings collapse into a tiny band. The path forward is to retrain the backbone with a metric-learning loss (ArcFace / batch-hard triplet) so cosine scores naturally spread across `[0, 1]` and the punisher hack can be removed. The infrastructure for that retraining ships in this repo — see [Improving Accuracy](#improving-accuracy-roadmap-tools).
+
+---
+
+## Improving Accuracy: Roadmap & Tools
+
+The gait module ships with everything needed to push accuracy from "demo-grade" to "production-grade" without rewriting the pipeline. The recommended order is:
+
+| # | Step | What it gives you | Code |
+|---|---|---|---|
+| 0 | **Measure** | CASIA-B Rank-1 per condition (NM/BG/CL) + open-set verification ROC | `modules/gait/src/evaluate.py` |
+| 1 | **Fix preprocessing** | Aspect-aware (64×44) centroid alignment, best-mask selection, silhouette QC, period-aware GEI | `modules/gait/src/preprocessing.py` |
+| 2 | **Retrain with metric learning** | ArcFace head or batch-hard triplet on L2-normalized embeddings — eliminates the Confidence Punisher hack | `modules/gait/src/{losses,sampler,train}.py` |
+| 3 | Architecture upgrade | Swap ResNet-18+GEI for GaitSet/GaitPart on silhouette sequences | *future work* |
+| 4 | Hyperparameter tuning | Optuna over margin, embedding dim, P×K, LR schedule, augmentations | *future work* |
+| 5 | **Test-time tricks** | Flip TTA, multi-clip enrollment, top-1 score fusion across clips, calibrated threshold | `gait_utils.py` (already active) |
+| 6 | Domain adaptation | Fine-tune on a small in-domain dataset from the deployment camera | *future work* |
+| 7 | **Production hygiene** | Versioned `(model.pth, preproc)` config bundle so embeddings stay comparable | `modules/gait/src/preproc_config.py` |
+
+### Test-time improvements active out of the box
+
+- **Multi-clip enrollment.** `POST /api/register-gait` now accepts a `videos` field (repeat the form name once per clip) and an optional `append=true` flag. The matcher reduces to the **maximum** cosine similarity across a user's clips. Single-clip enrollment via the `video` field still works unchanged.
+- **Flip TTA.** `gei_to_embedding` averages the embedding of the GEI and its horizontal flip — silhouettes are roughly left-right symmetric so this is a free accuracy bump.
+- **Vectorised gallery match.** Single matmul over the stacked gallery — see `modules/gait/src/benchmarks/bench_matcher.py` for the 10–15× speed-up.
+
+### Versioning: model + preproc move together
+
+`gait_utils` reads a sidecar JSON next to the `.pth` (e.g. `baseline_gait_model.config.json`). It captures `gei_size`, `score_scaling`, `l2_normalize_embeddings`, `match_threshold`, and the rest of the inference contract. **If the sidecar is missing, legacy v1 defaults are used** — the existing `baseline_gait_model.pth` keeps working byte-for-byte. Newly-trained models ship their own sidecar via `train.py`, automatically activating the v2 inference path (raw cosine, no `BASE_MIN` hack).
+
+### Running it
+
+```bash
+# Step 0 — Evaluate the current model on CASIA-B GEIs.
+python -m modules.gait.src.evaluate \
+    --data ./dataset/GEI_Data \
+    --model ./modules/gait/models/baseline_gait_model.pth \
+    --per-angle
+
+# Step 1 — Re-extract GEIs with the v2 aspect-aware pipeline.
+python modules/gait/src/phase1_video_to_gei.py \
+    --raw ./Raw_Video_Data --out ./dataset/TRACE_Gallery \
+    --aspect-aware --gei-h 64 --gei-w 44 --detect-period
+
+# Step 2 — Retrain with ArcFace.
+python -m modules.gait.src.train \
+    --data ./dataset/GEI_Data \
+    --out  ./modules/gait/models/gait_v2.pth \
+    --loss arcface --epochs 60 --gei-h 64 --gei-w 44
+
+# Step 0 again — gate against the production targets:
+#   NM Rank-1 ≥ 95%   BG Rank-1 ≥ 85%   CL Rank-1 ≥ 70%
+#   TAR @ FAR=1e-3   ≥ 95%
+python -m modules.gait.src.evaluate \
+    --data ./dataset/GEI_Data --model ./modules/gait/models/gait_v2.pth
+```
+
+To switch the running app to the new model, replace the file at `modules/gait/models/baseline_gait_model.pth` (and ship its `.config.json` sidecar alongside).
+
 ---
 
 ## Standard Operating Procedures
@@ -74,6 +133,8 @@ Record from a **90° side profile** (walking left-to-right or right-to-left). Fr
 
 **3. 📱 The Orientation Rule**
 Both enrollment and inference videos **must be shot in Landscape mode**. Portrait mode distorts the aspect ratio during the 64×64 neural network resize, causing false negatives.
+
+> When the v2 aspect-aware preprocessing pipeline is active (a sidecar config alongside the model declares `aspect_aware_align: true`), this rule relaxes — silhouettes are centroid-aligned and resized to a fixed aspect (default 64×44) without distortion. Landscape is still preferred but no longer mandatory.
 
 ---
 
@@ -161,9 +222,19 @@ TRACE_FINAL_PROJECT/
 │
 ├── modules/
 │   └── gait/
-│       ├── src/             # GEI generation & dataset/model definitions
+│       ├── src/
+│       │   ├── phase1_video_to_gei.py     # GEI extraction (v1 legacy + v2 aspect-aware)
+│       │   ├── phase3_dataset_and_model.py# CASIABDataset + BaselineGaitCNN
+│       │   ├── preprocessing.py           # v2 silhouette alignment, QC, period-aware GEI
+│       │   ├── losses.py                  # ArcFace + batch-hard triplet
+│       │   ├── sampler.py                 # P×K BatchSampler for metric learning
+│       │   ├── train.py                   # Metric-learning training entrypoint
+│       │   ├── evaluate.py                # CASIA-B Rank-1/ROC harness
+│       │   ├── preproc_config.py          # (model + preproc) version bundle
+│       │   └── benchmarks/                # Matcher / dispatch micro-benchmarks
 │       └── models/
-│           └── baseline_gait_model.pth   # Trained ResNet-18 weights (CASIA-B)
+│           ├── baseline_gait_model.pth    # Trained ResNet-18 weights (CASIA-B, v1)
+│           └── *.config.json              # Sidecar config for v2 models (auto-generated)
 │
 ├── templates/               # Jinja2 HTML templates (Tailwind CSS)
 │   ├── base.html
