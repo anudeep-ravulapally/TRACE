@@ -122,14 +122,9 @@ def test_unknown_probe_below_raw_floor(monkeypatch, reset_constants):
     base /= np.linalg.norm(base)
 
     # Build a single-user gallery where the unknown probe's similarity is
-    # ABOVE the punisher threshold (so step 1 passes) but BELOW the raw floor.
-    # Punisher: scaled = (raw - 0.982) / 0.018  → raw = 0.9855 yields scaled = 0.305? no.
-    # Need scaled >= 0.50 → raw >= 0.982 + 0.5*0.018 = 0.991.
-    # So pick raw = 0.9925 → scaled ≈ 0.583 (passes threshold),
-    # and floor = 0.987 actually accepts that. We need a multi-user gallery
-    # where best_raw < 0.987 but the punisher threshold is also breached.
-    # Easier: lower the threshold for this test so the floor is the binding
-    # constraint, mirroring the real-world v1 collapsed-band behavior.
+    # under the raw floor. We lower GAIT_THRESHOLD here so the floor is the
+    # binding constraint (otherwise step 1 would reject first), mirroring the
+    # real-world v1 collapsed-band behaviour.
     monkeypatch.setattr(gait_utils, "GAIT_THRESHOLD", 0.0)
 
     u1 = FakeUser("alice", [_vec_with_cosine(base, 0.984, seed=11).tolist()])

@@ -290,13 +290,15 @@ def open_set_calibration(
 
     out: Dict[str, float] = {}
     if genuine_best:
-        gb = np.asarray(genuine_best);    gm = np.asarray(genuine_margin)
+        gb = np.asarray(genuine_best)
+        gm = np.asarray(genuine_margin)
         out["genuine_best_p05"]   = float(np.percentile(gb, 5))
         out["genuine_best_p50"]   = float(np.percentile(gb, 50))
         out["genuine_margin_p05"] = float(np.percentile(gm, 5))
         out["genuine_margin_p50"] = float(np.percentile(gm, 50))
     if imposter_best:
-        ib = np.asarray(imposter_best);   im = np.asarray(imposter_margin)
+        ib = np.asarray(imposter_best)
+        im = np.asarray(imposter_margin)
         out["imposter_best_p99"]    = float(np.percentile(ib, 99))
         out["imposter_best_p999"]   = float(np.percentile(ib, 99.9))
         out["imposter_margin_p99"]  = float(np.percentile(im, 99))
